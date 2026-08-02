@@ -5,13 +5,15 @@ import logging
 import re
 import threading
 import time
+import urllib.error
 import urllib.request
 
 logger = logging.getLogger(__name__)
 
 PROXY_SOURCE_URL = (
     "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies"
-    "&protocol=http&proxy_format=protocolipport&format=text&timeout=20000"
+    "&protocol=http&ssl=yes&proxy_format=protocolipport"
+    "&format=text&timeout=20000"
 )
 _PROXY_PATTERN = re.compile(
     r"(?:https?://)?((?:\d{1,3}\.){3}\d{1,3}):(\d{2,5})",
@@ -22,6 +24,8 @@ _lock = threading.Lock()
 _proxies: list[str] = []
 _expires_at = 0.0
 _next_index = 0
+_PROBE_URL = "https://chatgpt.com/api/auth/csrf"
+_MAX_PROBE_ATTEMPTS = 6
 
 
 def _download() -> list[str]:
@@ -45,11 +49,28 @@ def _download() -> list[str]:
     return proxies
 
 
-def get_default_proxy() -> str:
-    """Return a rotating Proxyscrape proxy, or an empty string for direct mode.
+def _supports_https_tunnel(proxy: str) -> bool:
+    """Confirm the proxy accepts an HTTPS CONNECT tunnel to the registration site."""
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
+    )
+    request = urllib.request.Request(_PROBE_URL, headers={"User-Agent": "gpt-register/1.0"})
+    try:
+        with opener.open(request, timeout=8):
+            return True
+    except urllib.error.HTTPError:
+        # Any HTTP response means the CONNECT tunnel reached chatgpt.com.
+        return True
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        logger.debug("[proxy] rejected unusable HTTPS proxy %s: %s", proxy, exc)
+        return False
 
-    The source is cached briefly. Download failures intentionally return an empty
-    value so registrations retain the project's existing direct-connection path.
+
+def get_default_proxy() -> str:
+    """Return a rotating HTTPS-capable Proxyscrape proxy.
+
+    The source is cached briefly. An empty result signals that registration must
+    stop unless the caller explicitly selected direct connection.
     """
     global _proxies, _expires_at, _next_index
     with _lock:
@@ -58,16 +79,22 @@ def get_default_proxy() -> str:
             try:
                 fresh = _download()
             except Exception as exc:
-                logger.warning("[proxy] Proxyscrape download failed; using direct connection: %s", exc)
+                logger.warning("[proxy] Proxyscrape download failed: %s", exc)
                 return ""
             if not fresh:
-                logger.warning("[proxy] Proxyscrape returned no usable proxies; using direct connection")
+                logger.warning("[proxy] Proxyscrape returned no usable HTTPS proxies")
                 return ""
             _proxies = fresh
             _expires_at = now + _CACHE_SECONDS
             _next_index = 0
             logger.info("[proxy] loaded %d Proxyscrape proxies", len(_proxies))
 
-        proxy = _proxies[_next_index % len(_proxies)]
-        _next_index += 1
-        return proxy
+        attempts = min(len(_proxies), _MAX_PROBE_ATTEMPTS)
+        for _ in range(attempts):
+            proxy = _proxies[_next_index % len(_proxies)]
+            _next_index += 1
+            if _supports_https_tunnel(proxy):
+                return proxy
+
+        logger.warning("[proxy] no Proxyscrape proxy accepted an HTTPS CONNECT tunnel")
+        return ""

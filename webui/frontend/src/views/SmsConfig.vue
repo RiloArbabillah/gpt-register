@@ -3,6 +3,9 @@ import { computed, onActivated, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getSmsConfig, saveSmsConfig, testSms, getSmsAllCountries } from '@/api/settings'
 import FooterToolbar from '@/components/FooterToolbar.vue'
+import { useLocaleStore } from '@/stores/locale'
+
+const locale = useLocaleStore()
 
 const enabled = ref(false)
 const provider = ref('smsbower')
@@ -28,7 +31,7 @@ const testing = ref(false)
 const countryOptions = computed(() =>
   allCountries.value.map((c) => ({
     value: c.id,
-    label: `${c.id}·${c.name_cn}${c.price != null ? ` (${c.price}/${c.count})` : ''}`,
+    label: `${c.id} · ${locale.locale === 'en' ? (c.name_en || `Country ${c.id}`) : c.name_cn}${c.price != null ? ` (${c.price}/${c.count})` : ''}`,
     safe: c.openai_sms_safe,
   })),
 )
@@ -184,7 +187,9 @@ onActivated(() => load())
               <el-tag v-if="o.safe" size="small" type="success" style="margin-left: 6px">安全</el-tag>
             </el-option>
           </el-select>
-          <div class="hint" style="margin-top: 4px">已选 {{ allowed.length }} 个国家</div>
+          <div class="hint" style="margin-top: 4px">
+            {{ locale.locale === 'en' ? `Selected ${allowed.length} countries` : `已选 ${allowed.length} 个国家` }}
+          </div>
         </el-form-item>
 
         <el-divider content-position="left">失败重试策略</el-divider>
@@ -205,7 +210,10 @@ onActivated(() => load())
     </el-card>
 
     <FooterToolbar>
-      <template #left>接码平台：{{ provider === 'herosms' ? 'HeroSMS' : 'SmsBower' }}{{ allowed.length ? ` · 允许国家 ${allowed.length} 个` : '' }}</template>
+      <template #left>
+        {{ locale.locale === 'en' ? 'SMS provider:' : '接码平台：' }} {{ provider === 'herosms' ? 'HeroSMS' : 'SmsBower' }}
+        {{ allowed.length ? (locale.locale === 'en' ? ` · ${allowed.length} allowed countries` : ` · 允许国家 ${allowed.length} 个`) : '' }}
+      </template>
       <el-button :loading="testing" @click="test">测试余额</el-button>
       <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
     </FooterToolbar>

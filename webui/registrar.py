@@ -173,7 +173,7 @@ def _do_register(
                 logging.getLogger("registrar").info("[proxy] using default Proxyscrape proxy")
             else:
                 raise RuntimeError(
-                    "proxy_unavailable: gagal mengambil proxy Proxyscrape. "
+                    "proxy_unavailable: tidak ada proxy Proxyscrape yang dapat membuat HTTPS CONNECT tunnel. "
                     "Periksa koneksi atau aktifkan opsi 'Gunakan koneksi langsung' untuk melanjutkan tanpa proxy."
                 )
 

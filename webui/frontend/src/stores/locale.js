@@ -41,6 +41,19 @@ const messages = {
 }
 
 const englishReplacements = [
+  ['默认国家（不启用自动选号时强制用这个）', 'Default country (always use this when automatic country selection is disabled)'],
+  ['Service 代码（OpenAI = dr）', 'Service code (OpenAI = dr)'],
+  ['号码最高单价（SmsBower；空=不限）', 'Maximum number price (SmsBower; blank = unlimited)'],
+  ['同号成功复用上限（SmsBower，默认 3）', 'Maximum successful reuses per number (SmsBower, default 3)'],
+  ['启用号码复用', 'Enable number reuse'], ['自动选择最优国家（按价格 + 库存）', 'Automatically select the best country (price + stock)'],
+  ['启用自动选国家', 'Enable automatic country selection'], ['允许使用的国家（多选，可搜索；空=全部国家可用）', 'Allowed countries (multiple selection; blank allows every country)'],
+  ['最多换号次数（空=平台默认，一般 3）', 'Maximum number changes (blank uses the provider default, usually 3)'],
+  ['单号等待秒数（默认 80）', 'Wait time per number in seconds (default 80)'],
+  ['网络检查失败:', 'Network check failed:'], ['网络预检查未通过，继续尝试注册链路以获取精确错误...', 'Network pre-check failed. Continuing registration to obtain the precise error...'],
+  ['网络预检查未通过，继续尝试登录链路以获取精确错误...', 'Network pre-check failed. Continuing login to obtain the precise error...'],
+  ['Cloudflare warmup 失败:', 'Cloudflare warmup failed:'], ['获取 CSRF Token...', 'Retrieving CSRF token...'],
+  ['[register] 失败 (category=', '[register] Failed (category='], ['[register] 开始:', '[register] Starting:'],
+  ['[auto] 开始注册 ', '[auto] Starting registration '], ['[auto] [失败]', '[auto] [failed]'], ['[成功]', '[successful]'],
   ['交流QQ群：', 'Community QQ group:'], ['推荐服务器：', 'Recommended server:'], ['燃速云', 'Ransu Cloud'],
   ['CF Temp Email 未配置完整（缺 api_url / domain / admin_token），请去「邮箱配置」Tab 填写', 'CF Temp Email is incomplete (missing api_url, domain, or admin_token). Complete it in Mail Settings.'],
   ['IMAP catch-all 未配置完整（缺 ', 'IMAP catch-all is incomplete (missing '], ['），请去「邮箱配置」填写', '). Complete it in Mail Settings.'],
@@ -56,6 +69,7 @@ const englishReplacements = [
   ['读取配置失败:', 'Failed to read settings:'], ['导出整体异常:', 'Export failed:'], ['已启用接码但未配置 sms_api_key，跳过', 'SMS is enabled but sms_api_key is missing; skipping'], ['创建接码 controller 失败:', 'Failed to create SMS controller:'],
   ['代理源不可用', 'Proxy source unavailable'], ['无法从 Proxyscrape 获取代理', 'Unable to fetch proxies from Proxyscrape'], ['请切换到直连后重试', 'Switch to a direct connection and try again'],
   ['proxy_unavailable: gagal mengambil proxy Proxyscrape. Periksa koneksi atau aktifkan opsi \'Gunakan koneksi langsung\' untuk melanjutkan tanpa proxy.', 'Proxy source unavailable: unable to fetch a Proxyscrape proxy. Check the connection or enable Use direct connection to continue without a proxy.'],
+  ['proxy_unavailable: tidak ada proxy Proxyscrape yang dapat membuat HTTPS CONNECT tunnel. Periksa koneksi atau aktifkan opsi \'Gunakan koneksi langsung\' untuk melanjutkan tanpa proxy.', 'Proxy source unavailable: no Proxyscrape proxy could establish an HTTPS CONNECT tunnel. Check the connection or enable Use direct connection to continue without a proxy.'],
   ['gagal mengambil proxy Proxyscrape', 'unable to fetch a Proxyscrape proxy'], ['Periksa koneksi atau aktifkan opsi', 'Check the connection or enable'], ['Gunakan koneksi langsung', 'Use direct connection'], ['untuk melanjutkan tanpa proxy', 'to continue without a proxy'],
   ['全自动批量跑号时，各 worker 会按顺序轮流取用这里的代理；代理池为空则所有 worker 用「单次注册」页填的单个代理。', 'During automated batches, workers rotate through this pool. When empty, workers use the proxy from Single Registration.'],
   ['每次注册默认从 Proxyscrape 获取代理；失败时停止批量任务', 'When empty, each registration uses Proxyscrape; the batch stops if unavailable.'],
@@ -162,6 +176,7 @@ const englishReplacements = [
   ['[网络错误，号已 release]', '[network error, account released]'], ['[auto] 熔断: ${d.reason}', '[auto] Circuit breaker: ${d.reason}'],
   ['FormatInvalid', 'invalid entries'], ['个', ' '], ['条', ' records'], ['凭证', 'credentials'], ['错误', 'Error'],
   ['代理', 'proxy'], ['邮箱', 'email'], ['获取', 'Retrieve'], ['完成', 'Completed'],
+  ['（', ' ('], ['）', ')'], ['，', ', '], ['；', '; '], ['：', ': '],
 ]
 
 export function translateEnglish(value) {

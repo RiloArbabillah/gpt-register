@@ -16,17 +16,30 @@ from typing import Optional
 DB_PATH = Path(__file__).resolve().parent / "webui.db"
 
 _lock = threading.Lock()  # SQLite 写入串行化
+_connections = threading.local()
 
 
 def _conn() -> sqlite3.Connection:
+    # Reuse one SQLite handle per thread. The WebUI polls stats frequently and
+    # registration workers open several settings reads; creating an unclosed
+    # handle for each read eventually exhausts macOS file descriptors.
+    existing = getattr(_connections, "connection", None)
+    if existing is not None:
+        return existing
+
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30)
     con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=30000")
+    _connections.connection = con
     return con
 
 
 def init_db():
     con = _conn()
+    # journal_mode bersifat persisten pada file DB. Jalankan hanya sekali saat
+    # startup, bukan pada setiap koneksi worker yang berjalan paralel.
+    con.execute("PRAGMA journal_mode=WAL")
     con.executescript("""
         CREATE TABLE IF NOT EXISTS outlook_accounts (
             email           TEXT PRIMARY KEY,

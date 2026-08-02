@@ -10,11 +10,13 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from http_client import create_http_session
+
 logger = logging.getLogger(__name__)
 
 PROXY_SOURCE_URL = (
     "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies"
-    "&protocol=http&ssl=yes&format=json&timeout=20000"
+    "&format=json&timeout=20000"
 )
 _PROXY_PATTERN = re.compile(
     r"(?:https?://)?((?:\d{1,3}\.){3}\d{1,3}):(\d{2,5})",
@@ -48,9 +50,17 @@ _ALLOWED_COUNTRY_CODES = frozenset(
 _ALLOWED_COUNTRIES_QUERY = ",".join(sorted(_ALLOWED_COUNTRY_CODES))
 
 
-def _download() -> list[str]:
+def _download(protocol: str) -> list[str]:
+    """Download allowed HTTP or SOCKS5 proxies from ProxyScrape."""
+    if protocol not in {"http", "socks5"}:
+        raise ValueError(f"Unsupported ProxyScrape protocol: {protocol}")
+
+    ssl_filter = "&ssl=yes" if protocol == "http" else ""
     request = urllib.request.Request(
-        f"{PROXY_SOURCE_URL}&country={_ALLOWED_COUNTRIES_QUERY}",
+        (
+            f"{PROXY_SOURCE_URL}&protocol={protocol}{ssl_filter}"
+            f"&country={_ALLOWED_COUNTRIES_QUERY}"
+        ),
         headers={"User-Agent": "gpt-register/1.0"},
     )
     with urllib.request.urlopen(request, timeout=20) as response:
@@ -66,6 +76,8 @@ def _download() -> list[str]:
     for record in records:
         if not isinstance(record, dict):
             continue
+        if str(record.get("protocol") or "").lower() != protocol:
+            continue
         country_code = str((record.get("ip_data") or {}).get("countryCode") or "").upper()
         if country_code not in _ALLOWED_COUNTRY_CODES:
             continue
@@ -77,32 +89,28 @@ def _download() -> list[str]:
         octets = host.split(".")
         if any(int(octet) > 255 for octet in octets):
             continue
-        proxy = f"http://{host}:{port}"
+        proxy = f"{protocol}://{host}:{port}"
         if proxy not in seen:
             seen.add(proxy)
             proxies.append(proxy)
 
     logger.info(
-        "[proxy] accepted %d Proxyscrape HTTPS proxies from allowed countries",
+        "[proxy] accepted %d Proxyscrape %s proxies from allowed countries",
         len(proxies),
+        protocol,
     )
     return proxies
 
 
-def _probe_https_tunnel(proxy: str) -> tuple[str, float] | None:
-    """Return proxy latency when it accepts an HTTPS CONNECT tunnel."""
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
-    )
-    request = urllib.request.Request(_PROBE_URL, headers={"User-Agent": "gpt-register/1.0"})
+def _probe_https_proxy(proxy: str) -> tuple[str, float] | None:
+    """Return latency when an HTTP CONNECT or SOCKS5 proxy reaches HTTPS."""
     started_at = time.monotonic()
     try:
-        with opener.open(request, timeout=8):
-            return proxy, time.monotonic() - started_at
-    except urllib.error.HTTPError:
-        # Any HTTP response means the CONNECT tunnel reached chatgpt.com.
+        session = create_http_session(proxy=proxy)
+        # Any HTTP status means the proxy connection reached chatgpt.com.
+        session.get(_PROBE_URL, headers={"User-Agent": "gpt-register/1.0"}, timeout=8)
         return proxy, time.monotonic() - started_at
-    except (OSError, ValueError, urllib.error.URLError) as exc:
+    except Exception as exc:
         logger.debug("[proxy] rejected unusable HTTPS proxy %s: %s", proxy, exc)
         return None
 
@@ -114,7 +122,7 @@ def _select_fast_proxies(proxies: list[str]) -> list[str]:
 
     successful: list[tuple[str, float]] = []
     with ThreadPoolExecutor(max_workers=len(candidates), thread_name_prefix="proxy-probe") as executor:
-        futures = [executor.submit(_probe_https_tunnel, proxy) for proxy in candidates]
+        futures = [executor.submit(_probe_https_proxy, proxy) for proxy in candidates]
         for future in as_completed(futures):
             result = future.result()
             if result:
@@ -132,7 +140,7 @@ def _select_fast_proxies(proxies: list[str]) -> list[str]:
 
 
 def get_default_proxy() -> str:
-    """Return a rotating HTTPS-capable Proxyscrape proxy.
+    """Return a rotating HTTPS-capable HTTP CONNECT or SOCKS5 proxy.
 
     The source is cached briefly. An empty result signals that registration must
     stop unless the caller explicitly selected direct connection.
@@ -142,12 +150,16 @@ def get_default_proxy() -> str:
         now = time.monotonic()
         if now >= _expires_at:
             try:
-                fresh = _select_fast_proxies(_download())
+                http_proxies = _download("http")
+                socks5_proxies = _download("socks5")
+                fresh = _select_fast_proxies(
+                    http_proxies[:_PROBE_SAMPLE_SIZE] + socks5_proxies[:_PROBE_SAMPLE_SIZE]
+                )
             except Exception as exc:
                 logger.warning("[proxy] Proxyscrape download failed: %s", exc)
                 return ""
             if not fresh:
-                logger.warning("[proxy] Proxyscrape returned no usable HTTPS proxies")
+                logger.warning("[proxy] Proxyscrape returned no usable HTTP CONNECT or SOCKS5 proxies")
                 return ""
             _proxies = fresh
             _expires_at = now + _CACHE_SECONDS

@@ -65,9 +65,9 @@ python3 start_webui.py
 
 ## Proxy Behavior and Country Allowlist
 
-When no manual proxy is entered and direct connection is not explicitly enabled, the application downloads free HTTP proxies from ProxyScrape. Only HTTPS CONNECT-capable proxies are used.
+When no manual proxy is entered and direct connection is not explicitly enabled, the application downloads free HTTP CONNECT and SOCKS5 proxies from ProxyScrape. Only proxies that can reach an HTTPS endpoint are used.
 
-The downloader requests ProxyScrape records for the country allowlist below, then verifies every returned record's `ip_data.countryCode` before adding it to the pool. A proxy with a missing country code or a country not listed here is rejected. If no eligible proxy is available, the registration stops; it never silently falls back to a direct connection.
+The downloader requests separate ProxyScrape HTTP and SOCKS5 feeds for the country allowlist below, then verifies each record's protocol and `ip_data.countryCode` before adding it to the pool. A proxy with a missing country code, a mismatched protocol, or a country not listed here is rejected. The fastest working HTTP CONNECT and SOCKS5 proxies are selected together in one rotating pool. If no eligible proxy is available, the registration stops; it never silently falls back to a direct connection.
 
 Allowed ProxyScrape countries (exactly as configured):
 

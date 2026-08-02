@@ -94,6 +94,8 @@ _NETWORK_ERROR_PATTERNS = [
 def classify_error(err: str) -> str:
     """分类错误：'network'（环境/代理问题，号无辜）/ 'account'（号本身有问题）/ 'unknown'。"""
     s = (err or "").lower()
+    if "proxy_unavailable" in s:
+        return "proxy_unavailable"
     # 先匹配 account 特征（更具体），避免子串误命中（如 "outlook OTP timeout" 含 "timeout"）
     if any(p in s for p in (
         "wrong_email_otp_code", "invalid_grant", "imap xoauth2",
@@ -155,10 +157,30 @@ def _do_register(
             saved_env[k] = os.environ.get(k)
             os.environ[k] = v
 
-        cfg = Config()
-        cfg.proxy = (options.get("proxy") or "").strip() or None
+        configured_proxy = (options.get("proxy") or "").strip()
+        use_direct_connection = bool(options.get("use_direct_connection"))
+        if use_direct_connection:
+            selected_proxy = ""
+            logging.getLogger("registrar").warning("[proxy] direct connection explicitly selected")
+        elif configured_proxy:
+            selected_proxy = configured_proxy
+            logging.getLogger("registrar").info("[proxy] using manually configured proxy")
+        else:
+            from proxy_proxyscrape import get_default_proxy
 
-        # ─ 邮箱来源路由：outlook 池 vs CF Worker catch-all ─
+            selected_proxy = get_default_proxy()
+            if selected_proxy:
+                logging.getLogger("registrar").info("[proxy] using default Proxyscrape proxy")
+            else:
+                raise RuntimeError(
+                    "proxy_unavailable: gagal mengambil proxy Proxyscrape. "
+                    "Periksa koneksi atau aktifkan opsi 'Gunakan koneksi langsung' untuk melanjutkan tanpa proxy."
+                )
+
+        cfg = Config()
+        cfg.proxy = selected_proxy or None
+
+        # ─ 邮箱来源路由：outlook 池 / CF Worker / IMAP catch-all ─
         if mail_source == "cf_temp":
             sys_path_root = str(ROOT)
             if sys_path_root not in sys.path:
@@ -178,6 +200,22 @@ def _do_register(
             )
             logging.getLogger("registrar").info(
                 f"[register] 邮箱来源: cf_temp / domain={domain}"
+            )
+        elif mail_source == "imap":
+            from mail_imap import ImapCatchAllProvider
+
+            imap = db.get_imap_credentials()
+            missing = [name for name in ("host", "username", "password", "domain") if not imap[name]]
+            if missing:
+                raise RuntimeError(
+                    "IMAP catch-all 未配置完整（缺 " + ", ".join(missing) + "），请去「邮箱配置」填写"
+                )
+            mail = ImapCatchAllProvider(
+                host=imap["host"], username=imap["username"], password=imap["password"],
+                domain=imap["domain"], port=int(imap["port"] or 993),
+            )
+            logging.getLogger("registrar").info(
+                f"[register] 邮箱来源: imap / domain={imap['domain']}"
             )
         else:
             mail = OutlookMailProvider(
@@ -240,8 +278,8 @@ def _do_register(
 
         # 落库
         db.save_registered(d)
-        # CF 模式下 email 是虚拟占位（cf_placeholder_XXX@cf.local），不操作号池
-        if mail_source != "cf_temp":
+        # Catch-all 模式下 email 是虚拟占位，不操作 Outlook 号池。
+        if mail_source not in ("cf_temp", "imap"):
             db.mark_done(email)
 
         # ─ 可选：导出到 CPA / SUB2API 面板（仅勾选启用时才执行） ─
@@ -269,8 +307,7 @@ def _do_register(
         logging.getLogger("registrar").error(f"[register] 失败 (category={category}): {err}")
         if category != "account":
             logging.getLogger("registrar").error(traceback.format_exc())
-        # CF 模式下不操作号池
-        if mail_source != "cf_temp":
+        if mail_source not in ("cf_temp", "imap"):
             if category == "network":
                 db.release_unused(email)
                 logging.getLogger("registrar").warning(

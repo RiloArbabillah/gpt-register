@@ -32,6 +32,7 @@ async function run() {
     const r = await startRegister({
       email: regEmail.value.trim() || null,
       proxy: form.value.proxy.trim(),
+      use_direct_connection: form.value.useDirectConnection,
       otp_timeout: parseInt(form.value.otpTimeout, 10) || 10,
       want_access_token: true,
       want_session_token: true,
@@ -69,7 +70,7 @@ async function copyField(email, field) {
             <el-form-item label="邮箱（留空 = 自动 claim 下一个 available）">
               <el-input v-model="regEmail" placeholder="留空 = 自动选号 / 或填指定邮箱" clearable />
             </el-form-item>
-            <el-form-item label="本次使用的单个代理（可从代理池选，或手动输入；直连留空）">
+            <el-form-item label="本次使用的单个代理（留空时默认使用 Proxyscrape）">
               <el-select
                 v-model="form.proxy" filterable clearable allow-create default-first-option
                 :reserve-keyword="false" placeholder="socks5://user:pass@host:1080"
@@ -78,8 +79,11 @@ async function copyField(email, field) {
                 <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
               </el-select>
               <div class="hint" style="margin-top: 4px">
-                Plus 检测、自动批量的兜底代理都复用这里；批量并发轮换请到「代理池」页管理。
+                可从代理池选择或手动输入；Proxyscrape 无法获取时会停止，不会自动直连。
               </div>
+            </el-form-item>
+            <el-form-item>
+              <el-checkbox v-model="form.useDirectConnection">Gunakan koneksi langsung</el-checkbox>
             </el-form-item>
             <el-form-item label="OTP 等待秒数">
               <el-input-number v-model="form.otpTimeout" :min="10" :max="600" />

@@ -59,6 +59,7 @@ class RegisterReq(BaseModel):
     want_session_token: bool = True
     want_refresh_token: bool = True
     proxy: str = ""
+    use_direct_connection: bool = False
     otp_timeout: int = 10
     allow_existing_login: bool = True
 
@@ -213,13 +214,13 @@ def api_proxy_test(req: ProxyTestReq):
 def api_register(req: RegisterReq):
     """启动注册任务，返回 run_id。前端拿 run_id 去 /api/runs/{run_id}/stream 订阅 SSE。"""
     mail_source = db.get_setting("mail_source", "outlook")
-    is_cf = (mail_source == "cf_temp")
+    uses_catch_all = mail_source in ("cf_temp", "imap")
 
-    if is_cf:
-        # CF 模式：不需要 outlook 号池，用虚拟占位 account
+    if uses_catch_all:
+        # Catch-all 模式：不需要 Outlook 号池，用虚拟占位 account。
         import time as _t
         account = {
-            "email": f"cf_placeholder_{int(_t.time())}@cf.local",
+            "email": f"{mail_source}_placeholder_{int(_t.time())}@local",
             "password": "",
             "client_id": "",
             "refresh_token": "",
@@ -238,6 +239,7 @@ def api_register(req: RegisterReq):
         "want_session_token": req.want_session_token,
         "want_refresh_token": req.want_refresh_token,
         "proxy": req.proxy,
+        "use_direct_connection": req.use_direct_connection,
         "otp_timeout": int(req.otp_timeout),
         "allow_existing_login": req.allow_existing_login,
     }
@@ -343,10 +345,15 @@ def api_get_mail_config():
 
 
 class SaveMailConfigReq(BaseModel):
-    mail_source: Optional[str] = None       # outlook / cf_temp
+    mail_source: Optional[str] = None       # outlook / cf_temp / imap
     cf_api_url: Optional[str] = None
     cf_admin_token: Optional[str] = None
     cf_domain: Optional[str] = None
+    imap_host: Optional[str] = None
+    imap_port: Optional[str] = None
+    imap_username: Optional[str] = None
+    imap_password: Optional[str] = None
+    imap_domain: Optional[str] = None
 
 
 @app.post("/api/settings/mail")
@@ -357,8 +364,23 @@ def api_save_mail_config(req: SaveMailConfigReq):
 
 @app.post("/api/settings/mail/test")
 def api_test_mail():
-    """测试 CF Temp Email 连通性：创建一个测试地址，确认 admin_token + domain 都对。"""
+    """Test the active catch-all mailbox configuration."""
     mail_source = db.get_setting("mail_source", "outlook")
+    if mail_source == "imap":
+        from mail_imap import ImapCatchAllProvider
+        config = db.get_imap_credentials()
+        missing = [name for name in ("host", "username", "password", "domain") if not config[name]]
+        if missing:
+            raise HTTPException(400, "未配置 IMAP: " + ", ".join(missing))
+        try:
+            provider = ImapCatchAllProvider(
+                host=config["host"], username=config["username"], password=config["password"],
+                domain=config["domain"], port=int(config["port"] or 993),
+            )
+            provider.test_connection()
+            return {"ok": True, "message": "IMAP 登录成功"}
+        except Exception as e:
+            raise HTTPException(500, f"IMAP 连接失败: {e}")
     if mail_source != "cf_temp":
         raise HTTPException(400, f"当前 mail_source={mail_source}，不需要测试")
 
@@ -697,6 +719,7 @@ class AutoLoopStartReq(BaseModel):
     want_refresh_token: bool = True
     proxy: str = ""              # 单代理（concurrency=1 + 无代理池时用）
     proxy_pool: str = ""         # 多代理池（每行一个）；优先于 proxy
+    use_direct_connection: bool = False
     concurrency: int = 1         # 并发 worker 数（1-20）
     otp_timeout: int = 10
     allow_existing_login: bool = True

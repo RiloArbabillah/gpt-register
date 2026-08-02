@@ -622,10 +622,15 @@ def set_setting(key: str, value) -> None:
 def get_mail_config() -> dict:
     """返回邮箱来源配置（admin_token 隐藏明文）。"""
     return {
-        "mail_source":   get_setting("mail_source", "outlook"),  # outlook / cf_temp
+        "mail_source":   get_setting("mail_source", "outlook"),  # outlook / cf_temp / imap
         "cf_api_url":    get_setting("cf_api_url", ""),
         "cf_admin_token": "***" if get_setting("cf_admin_token") else "",
         "cf_domain":     get_setting("cf_domain", ""),
+        "imap_host":     get_setting("imap_host", ""),
+        "imap_port":     get_setting("imap_port", "993"),
+        "imap_username": get_setting("imap_username", ""),
+        "imap_password": "***" if get_setting("imap_password") else "",
+        "imap_domain":   get_setting("imap_domain", ""),
     }
 
 
@@ -633,7 +638,7 @@ def save_mail_config(data: dict) -> None:
     """保存邮箱配置。admin_token 传 '***' 表示不修改。"""
     if "mail_source" in data:
         src = str(data["mail_source"]).strip().lower()
-        if src not in ("outlook", "cf_temp"):
+        if src not in ("outlook", "cf_temp", "imap"):
             src = "outlook"
         set_setting("mail_source", src)
     if "cf_api_url" in data:
@@ -642,11 +647,27 @@ def save_mail_config(data: dict) -> None:
         set_setting("cf_domain", str(data["cf_domain"]).strip())
     if data.get("cf_admin_token") and data["cf_admin_token"] != "***":
         set_setting("cf_admin_token", str(data["cf_admin_token"]).strip())
+    for key in ("imap_host", "imap_port", "imap_username", "imap_domain"):
+        if key in data:
+            set_setting(key, str(data[key]).strip())
+    if data.get("imap_password") and data["imap_password"] != "***":
+        set_setting("imap_password", str(data["imap_password"]).strip())
 
 
 def get_cf_admin_token() -> str:
     """内部用：拿明文 admin_token。"""
     return get_setting("cf_admin_token", "")
+
+
+def get_imap_credentials() -> dict:
+    """Internal-only IMAP configuration, including the password."""
+    return {
+        "host": get_setting("imap_host", ""),
+        "port": get_setting("imap_port", "993"),
+        "username": get_setting("imap_username", ""),
+        "password": get_setting("imap_password", ""),
+        "domain": get_setting("imap_domain", ""),
+    }
 
 
 # ──────────────────────── SMS 接码配置 ────────────────────────

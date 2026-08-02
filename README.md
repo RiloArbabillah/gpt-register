@@ -9,7 +9,8 @@
 **完全无浏览器**：用 `curl_cffi` 模拟 TLS 指纹 + 纯 Python/QuickJS 解 OpenAI Sentinel PoW + IMAP XOAUTH2 取 OTP，直接走 OpenAI authorize 状态机。
 
 含轻量级 **WebUI**：批量导入号池、可视化触发注册、实时 SSE 日志、凭证一键复制。
-**邮箱来源支持双模式**：Outlook 接码池 + CF Worker 自建 catch-all（`cloudflare_temp_email`）。
+**邮箱来源支持三种模式**：Outlook 接码池、CF Worker 自建 catch-all（`cloudflare_temp_email`），以及 IMAP catch-all。
+**代理默认值**：未填写代理时，注册任务会轮换使用 Proxyscrape 免费 HTTP 代理。若 sumber proxy tidak tersedia, tugas dihentikan dan tidak otomatis memakai koneksi langsung; aktifkan opsi `Gunakan koneksi langsung` bila memang ingin menjalankan tanpa proxy.
 不含支付、daemon、Camoufox、Playwright。
 
 ## 📰 最近更新（2026-07）
@@ -28,6 +29,9 @@
   - 支持 `dreamhunter2333/cloudflare_temp_email` 部署的 Worker
   - CF 模式下不需要 outlook 接码号，注册时随机生成 catch-all 邮箱
   - 内置 `/admin/new_address` + `/admin/mails` 接口对接 + Bot Fight Mode 绕过
+- ✉️ **IMAP catch-all 支持**
+  - 在「邮箱配置」选择 `IMAP Catch-all`，填入 IMAP 主机、账号、密码和 catch-all 域名
+  - 每次注册自动使用 `随机值-gpt@你的域名`，并从 IMAP INBOX 匹配该收件人取得 OTP
 - 🔄 **账号重置功能**：done/failed 状态的号一键重置回 available；支持批量勾选重置
 - 🚀 **多 worker 并发**（1-20）+ 代理池 round-robin：auto-loop 改成多线程，每个 worker 独立代理
 - 🩺 **错误分类 + 熔断**：网络错误自动 release 号；连续 3 次网络错误自动暂停 + 红色横幅
@@ -321,5 +325,3 @@ WebUI「📱 接码配置」Tab 启用接码后，命中 add-phone 时会自动�
 - **号码复用**：SmsBower / HeroSMS 在 20 分钟生命周期内同号最多复用 N 次（默认 3）。一个号注册多个 ChatGPT 可显著降本，但前提是 OpenAI 端没风控同号。
 - **HeroSMS 退款机制**：HeroSMS 购买后 2 分钟内不可取消，取消后 20 分钟自动退款到余额；SmsBower 可立即取消退款。注册机中号码不可用时会立刻换号，HeroSMS 的废号等 20 分钟后自动退回。
 - **OTP validate 失败 → resend 兜底**：phone-otp/validate 401 时会自动 resend 一次再等新码（OpenAI 偶尔拒第一条码但接受第二条）。
-
-

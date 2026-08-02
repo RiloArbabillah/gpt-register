@@ -7,6 +7,7 @@ const KEY = 'gpt_outlook_register_form_v2'
 // （proxy 在 注册 / 自动跑号 / Plus 检测 三处共用）
 const defaults = {
   proxy: '',
+  useDirectConnection: false,
   otpTimeout: 10,
   autoConcurrency: 1,
   autoCoolDown: 3,

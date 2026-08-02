@@ -9,6 +9,12 @@ const cfApiUrl = ref('')
 const cfDomain = ref('')
 const cfAdminToken = ref('')
 const tokenPlaceholder = ref('Worker 配置的 ADMIN_PASSWORDS')
+const imapHost = ref('')
+const imapPort = ref('993')
+const imapUsername = ref('')
+const imapPassword = ref('')
+const imapDomain = ref('')
+const imapPasswordPlaceholder = ref('IMAP password')
 const saving = ref(false)
 const testing = ref(false)
 
@@ -21,11 +27,19 @@ async function load() {
     cfAdminToken.value = ''
     tokenPlaceholder.value = config.cf_admin_token === '***'
       ? '已设置（留空不修改）' : 'Worker 配置的 ADMIN_PASSWORDS'
+    imapHost.value = config.imap_host || ''
+    imapPort.value = config.imap_port || '993'
+    imapUsername.value = config.imap_username || ''
+    imapPassword.value = ''
+    imapDomain.value = config.imap_domain || ''
+    imapPasswordPlaceholder.value = config.imap_password === '***'
+      ? '已设置（留空不修改）' : 'IMAP password'
   } catch (e) { ElMessage.error(e.message) }
 }
 
 async function save() {
   const isCf = source.value === 'cf_temp'
+  const isImap = source.value === 'imap'
   saving.value = true
   try {
     await saveMailConfig({
@@ -33,6 +47,11 @@ async function save() {
       cf_api_url: isCf ? cfApiUrl.value.trim() : '',
       cf_admin_token: isCf ? (cfAdminToken.value.trim() || '***') : '***',
       cf_domain: isCf ? cfDomain.value.trim() : '',
+      imap_host: isImap ? imapHost.value.trim() : '',
+      imap_port: isImap ? imapPort.value.trim() : '',
+      imap_username: isImap ? imapUsername.value.trim() : '',
+      imap_password: isImap ? (imapPassword.value || '***') : '***',
+      imap_domain: isImap ? imapDomain.value.trim() : '',
     })
     ElMessage.success('保存成功')
     load()
@@ -55,14 +74,14 @@ onActivated(() => load())
     <el-card shadow="never" style="max-width: 720px">
       <template #header><span class="section-title" style="margin: 0">邮箱来源配置</span></template>
       <p class="hint">
-        OpenAI 注册需要邮箱收 OTP。可选 Outlook 接码池（从邮箱列表 claim），
-        或用自建 CF Worker catch-all 邮箱。
+        OpenAI 注册需要邮箱收 OTP。可选 Outlook 接码池、自建 CF Worker，或 IMAP catch-all。
       </p>
       <el-form label-position="top">
         <el-form-item label="邮箱来源">
           <el-radio-group v-model="source">
             <el-radio value="outlook">Outlook 接码池</el-radio>
             <el-radio value="cf_temp">CF Temp Email（自建 catch-all）</el-radio>
+            <el-radio value="imap">IMAP Catch-all</el-radio>
           </el-radio-group>
         </el-form-item>
 
@@ -82,12 +101,34 @@ onActivated(() => load())
           />
         </template>
 
+        <template v-if="source === 'imap'">
+          <el-form-item label="IMAP Host">
+            <el-input v-model="imapHost" placeholder="imap.example.com" />
+          </el-form-item>
+          <el-form-item label="IMAP Port">
+            <el-input v-model="imapPort" inputmode="numeric" placeholder="993" />
+          </el-form-item>
+          <el-form-item label="IMAP Username">
+            <el-input v-model="imapUsername" placeholder="inbox@example.com" />
+          </el-form-item>
+          <el-form-item label="IMAP Password">
+            <el-input v-model="imapPassword" type="password" show-password :placeholder="imapPasswordPlaceholder" />
+          </el-form-item>
+          <el-form-item label="Catch-all domain">
+            <el-input v-model="imapDomain" placeholder="example.com" />
+          </el-form-item>
+          <el-alert
+            type="info" :closable="false" show-icon
+            title="Setiap pendaftaran menggunakan alamat acak dengan akhiran -gpt@domain ini."
+          />
+        </template>
+
       </el-form>
     </el-card>
 
     <FooterToolbar>
-      <template #left>邮箱来源：{{ source === 'cf_temp' ? 'CF Temp Email' : 'Outlook 接码池' }}</template>
-      <el-button v-if="source === 'cf_temp'" :loading="testing" @click="test">测试 CF 连通性</el-button>
+      <template #left>邮箱来源：{{ source === 'cf_temp' ? 'CF Temp Email' : source === 'imap' ? 'IMAP Catch-all' : 'Outlook 接码池' }}</template>
+      <el-button v-if="source === 'cf_temp' || source === 'imap'" :loading="testing" @click="test">测试连接</el-button>
       <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
     </FooterToolbar>
   </div>

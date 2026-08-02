@@ -210,6 +210,8 @@ class AutoLoopController:
 
     def _proxy_for_worker(self, worker_id: int) -> str:
         """按 worker_id 从代理池里挑一个代理。空池时回退到 options.proxy。"""
+        if self._options.get("use_direct_connection"):
+            return ""
         if self._proxy_pool:
             return self._proxy_pool[worker_id % len(self._proxy_pool)]
         return self._options.get("proxy", "") or ""
@@ -237,6 +239,19 @@ class AutoLoopController:
                 self._consecutive_network_fails >= self._circuit_break_threshold
                 and self._state == AutoLoopState.RUNNING
             )
+
+            proxy_unavailable = category == "proxy_unavailable"
+
+        if proxy_unavailable:
+            with self._lock:
+                self._stop_event.set()
+                self._last_message = (
+                    "Proxy Proxyscrape tidak tersedia. Batch dihentikan; "
+                    "periksa koneksi atau aktifkan koneksi langsung sebelum mulai lagi."
+                )
+            logger.warning(self._last_message)
+            self._broadcast("state", self._snapshot())
+            return
 
         if target_reached:
             with self._lock:
@@ -320,11 +335,11 @@ class AutoLoopController:
                     )
                     return
 
-            # claim 下一个号（CF 模式用虚拟占位，无需 outlook 号池）
+            # Catch-all 模式用虚拟占位，无需 Outlook 号池。
             mail_source = db.get_setting("mail_source", "outlook")
-            if mail_source == "cf_temp":
+            if mail_source in ("cf_temp", "imap"):
                 account = {
-                    "email": f"cf_placeholder_{int(time.time())}_{worker_id}@cf.local",
+                    "email": f"{mail_source}_placeholder_{int(time.time())}_{worker_id}@local",
                     "password": "", "client_id": "", "refresh_token": "",
                 }
             else:
@@ -357,7 +372,7 @@ class AutoLoopController:
                 run_id = registrar.start_registration(account, run_options)
             except Exception as e:
                 logger.exception(f"[worker-{worker_id}] 启动注册失败: {e}")
-                if mail_source != "cf_temp":
+                if mail_source not in ("cf_temp", "imap"):
                     db.release_unused(account["email"])
                 time.sleep(2)
                 continue

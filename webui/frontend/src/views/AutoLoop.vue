@@ -37,6 +37,7 @@ async function start() {
     await autoStart({
       proxy: form.value.proxy.trim(),
       proxy_pool: proxyStore.text,
+      use_direct_connection: form.value.useDirectConnection,
       concurrency: parseInt(form.value.autoConcurrency, 10) || 1,
       otp_timeout: parseInt(form.value.otpTimeout, 10) || 10,
       want_access_token: true,
@@ -80,10 +81,14 @@ async function call(fn, name) {
             当前 {{ proxyCount }} 个代理
           </el-tag>
           <span class="hint">
-            {{ proxyCount ? '各 worker 按顺序轮流取用' : '为空：所有 worker 用「单次注册」页填的单代理' }}
+            {{ proxyCount ? '各 worker 按顺序轮流取用' : '为空：每次注册默认从 Proxyscrape 获取代理；失败时停止批量任务' }}
           </span>
           <el-button size="small" @click="router.push('/proxy')">管理代理池</el-button>
         </div>
+      </el-form-item>
+
+      <el-form-item>
+        <el-checkbox v-model="form.useDirectConnection">Gunakan koneksi langsung</el-checkbox>
       </el-form-item>
 
       <el-space wrap style="margin-top: 8px">

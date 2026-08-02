@@ -8,12 +8,14 @@ import { copyText } from '@/api/request'
 import { useFormStore } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
+import { useLocaleStore } from '@/stores/locale'
 import LogPanel from '@/components/LogPanel.vue'
 
 const route = useRoute()
 const { form } = storeToRefs(useFormStore())
 const { list: proxyList } = storeToRefs(useProxyStore())
 const runtime = useRuntimeStore()
+const locale = useLocaleStore()
 const { runningSingle, lastRunResult } = storeToRefs(runtime)
 
 const starting = ref(false)
@@ -65,12 +67,12 @@ async function copyField(email, field) {
     <el-row :gutter="16">
       <el-col :md="10" style="margin-bottom: 16px">
         <el-card shadow="never">
-          <template #header><span class="section-title" style="margin: 0">单次注册</span></template>
+          <template #header><span class="section-title" style="margin: 0">{{ locale.t('singleRegistration') }}</span></template>
           <el-form label-position="top">
-            <el-form-item label="邮箱（留空 = 自动 claim 下一个 available）">
+            <el-form-item :label="locale.t('email')">
               <el-input v-model="regEmail" placeholder="留空 = 自动选号 / 或填指定邮箱" clearable />
             </el-form-item>
-            <el-form-item label="本次使用的单个代理（留空时默认使用 Proxyscrape）">
+            <el-form-item :label="locale.t('manualProxy')">
               <el-select
                 v-model="form.proxy" filterable clearable allow-create default-first-option
                 :reserve-keyword="false" placeholder="socks5://user:pass@host:1080"
@@ -79,17 +81,17 @@ async function copyField(email, field) {
                 <el-option v-for="p in proxyList" :key="p" :label="p" :value="p" />
               </el-select>
               <div class="hint" style="margin-top: 4px">
-                可从代理池选择或手动输入；Proxyscrape 无法获取时会停止，不会自动直连。
+                {{ locale.t('defaultProxyHint') }}
               </div>
             </el-form-item>
             <el-form-item>
-              <el-checkbox v-model="form.useDirectConnection">Gunakan koneksi langsung</el-checkbox>
+              <el-checkbox v-model="form.useDirectConnection">{{ locale.t('directConnection') }}</el-checkbox>
             </el-form-item>
-            <el-form-item label="OTP 等待秒数">
+            <el-form-item :label="locale.t('otpTimeout')">
               <el-input-number v-model="form.otpTimeout" :min="10" :max="600" />
             </el-form-item>
             <el-button type="primary" :loading="starting || runningSingle" @click="run">
-              开始注册
+              {{ locale.t('start') }}
             </el-button>
           </el-form>
 

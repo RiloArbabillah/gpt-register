@@ -5,36 +5,38 @@ import { storeToRefs } from 'pinia'
 import { useThemeStore } from '@/stores/theme'
 import { useStatsStore } from '@/stores/stats'
 import { useRuntimeStore } from '@/stores/runtime'
+import { useLocaleStore } from '@/stores/locale'
 
 const route = useRoute()
 const router = useRouter()
 const theme = useThemeStore()
 const statsStore = useStatsStore()
 const runtime = useRuntimeStore()
+const locale = useLocaleStore()
 const { stats } = storeToRefs(statsStore)
 const { banner } = storeToRefs(runtime)
 
 const collapse = ref(false)
 const adDismissed = ref(false)
 
-const GROUP_ORDER = ['概览', '注册', '数据', '配置']
+const GROUP_ORDER = ['overview', 'registration', 'data', 'settings']
 const groups = computed(() => {
   const map = {}
   for (const r of router.getRoutes()) {
-    if (!r.meta?.title) continue
-    const g = r.meta.group || '其他'
+    if (!r.meta?.titleKey) continue
+    const g = r.meta.groupKey || 'other'
     ;(map[g] ||= []).push(r)
   }
-  return GROUP_ORDER.filter((g) => map[g]).map((g) => ({ name: g, items: map[g] }))
+  return GROUP_ORDER.filter((g) => map[g]).map((g) => ({ key: g, name: locale.t(g), items: map[g] }))
 })
 
 const activeMenu = computed(() => route.path)
-const crumb = computed(() => [route.meta.group, route.meta.title].filter(Boolean))
+const crumb = computed(() => [route.meta.groupKey, route.meta.titleKey].filter(Boolean).map(locale.t))
 
 const menuOptions = computed(() =>
   router.getRoutes()
-    .filter((r) => r.meta?.title)
-    .map((r) => ({ value: r.path, label: `${r.meta.group} / ${r.meta.title}` })),
+    .filter((r) => r.meta?.titleKey)
+    .map((r) => ({ value: r.path, label: `${locale.t(r.meta.groupKey)} / ${locale.t(r.meta.titleKey)}` })),
 )
 const search = ref('')
 function onSearch(path) {
@@ -43,11 +45,11 @@ function onSearch(path) {
 }
 
 const statPills = computed(() => [
-  { label: '总计', value: stats.value.total, type: 'info' },
-  { label: '可用', value: stats.value.available, type: 'success' },
-  { label: '进行中', value: stats.value.in_use, type: 'warning' },
-  { label: '完成', value: stats.value.done, type: 'primary' },
-  { label: '失败', value: stats.value.failed, type: 'danger' },
+  { label: locale.t('total'), value: stats.value.total, type: 'info' },
+  { label: locale.t('available'), value: stats.value.available, type: 'success' },
+  { label: locale.t('running'), value: stats.value.in_use, type: 'warning' },
+  { label: locale.t('done'), value: stats.value.done, type: 'primary' },
+  { label: locale.t('failed'), value: stats.value.failed, type: 'danger' },
 ])
 
 onMounted(() => {
@@ -65,10 +67,10 @@ onMounted(() => {
       </div>
       <el-scrollbar>
         <el-menu :default-active="activeMenu" router :collapse="collapse" class="side-menu">
-          <el-menu-item-group v-for="grp in groups" :key="grp.name" :title="collapse ? '' : grp.name">
+          <el-menu-item-group v-for="grp in groups" :key="grp.key" :title="collapse ? '' : grp.name">
             <el-menu-item v-for="r in grp.items" :key="r.path" :index="r.path">
               <el-icon><component :is="r.meta.icon" /></el-icon>
-              <template #title>{{ r.meta.title }}</template>
+              <template #title>{{ locale.t(r.meta.titleKey) }}</template>
             </el-menu-item>
           </el-menu-item-group>
         </el-menu>
@@ -87,7 +89,7 @@ onMounted(() => {
         </div>
         <div class="right">
           <el-select
-            v-model="search" filterable clearable placeholder="搜索功能"
+            v-model="search" filterable clearable :placeholder="locale.t('search')"
             size="small" class="search-box" @change="onSearch"
           >
             <el-option v-for="o in menuOptions" :key="o.value" :label="o.label" :value="o.value" />
@@ -97,21 +99,25 @@ onMounted(() => {
               {{ p.label }} <b>{{ p.value }}</b>
             </el-tag>
           </div>
-          <el-tooltip :content="theme.dark ? '浅色模式' : '深色模式'">
+          <el-tooltip :content="theme.dark ? locale.t('light') : locale.t('dark')">
             <el-button circle text @click="theme.toggle">
               <el-icon :size="18"><Moon v-if="!theme.dark" /><Sunny v-else /></el-icon>
             </el-button>
           </el-tooltip>
+          <el-select :model-value="locale.locale" size="small" style="width: 96px" @update:model-value="locale.setLocale">
+            <el-option value="zh" :label="locale.t('chinese')" />
+            <el-option value="en" :label="locale.t('english')" />
+          </el-select>
           <el-dropdown>
             <span class="avatar">
               <el-avatar :size="28" class="avatar-img"><el-icon><User /></el-icon></el-avatar>
-              <span class="avatar-name">管理员</span>
+              <span class="avatar-name">{{ locale.t('administrator') }}</span>
               <el-icon :size="12"><ArrowDown /></el-icon>
             </span>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item @click="theme.toggle">
-                  {{ theme.dark ? '浅色模式' : '深色模式' }}
+                  {{ theme.dark ? locale.t('light') : locale.t('dark') }}
                 </el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -123,9 +129,9 @@ onMounted(() => {
         <div v-if="!adDismissed" class="ad-banner">
           <div class="ad-content">
             <el-icon :size="16" style="color: #e6a23c; flex-shrink: 0"><Bell /></el-icon>
-            <span>交流QQ群：<b>259844673</b></span>
+            <span>{{ locale.locale === 'en' ? 'Community QQ group:' : '交流QQ群：' }} <b>259844673</b></span>
             <span class="ad-sep">|</span>
-            <span>推荐服务器：<a href="http://www.ransuyun.com" target="_blank" rel="noopener">燃速云</a></span>
+            <span>{{ locale.locale === 'en' ? 'Recommended server:' : '推荐服务器：' }} <a href="http://www.ransuyun.com" target="_blank" rel="noopener">{{ locale.locale === 'en' ? 'Ransu Cloud' : '燃速云' }}</a></span>
           </div>
           <el-button text size="small" class="ad-close" @click="adDismissed = true">
             <el-icon :size="14"><Close /></el-icon>
@@ -233,4 +239,3 @@ onMounted(() => {
   .pills, .search-box, .avatar-name { display: none; }
 }
 </style>
-

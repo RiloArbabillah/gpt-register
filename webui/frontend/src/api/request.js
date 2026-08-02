@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { translateEnglish } from '@/stores/locale'
 
 // ────────────────────────────────────────────────────────────
 // ⭐ 后端地址统一入口
@@ -23,7 +24,10 @@ http.interceptors.response.use(
       error?.response?.statusText ||
       error?.message ||
       '请求失败'
-    return Promise.reject(new Error(detail))
+    const message = localStorage.getItem('gpt_register_locale') === 'en'
+      ? translateEnglish(detail)
+      : detail
+    return Promise.reject(new Error(message))
   },
 )
 

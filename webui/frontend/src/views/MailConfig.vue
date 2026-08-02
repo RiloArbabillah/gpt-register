@@ -3,8 +3,10 @@ import { onActivated, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getMailConfig, saveMailConfig, testMail } from '@/api/settings'
 import FooterToolbar from '@/components/FooterToolbar.vue'
+import { useLocaleStore } from '@/stores/locale'
 
 const source = ref('outlook')
+const locale = useLocaleStore()
 const cfApiUrl = ref('')
 const cfDomain = ref('')
 const cfAdminToken = ref('')
@@ -53,7 +55,7 @@ async function save() {
       imap_password: isImap ? (imapPassword.value || '***') : '***',
       imap_domain: isImap ? imapDomain.value.trim() : '',
     })
-    ElMessage.success('保存成功')
+    ElMessage.success(locale.t('saved'))
     load()
   } catch (e) { ElMessage.error(e.message) }
   finally { saving.value = false }
@@ -61,7 +63,7 @@ async function save() {
 
 async function test() {
   testing.value = true
-  try { const r = await testMail(); ElMessage.success(r.message || '连通正常') }
+  try { const r = await testMail(); ElMessage.success(r.message || locale.t('connectionOk')) }
   catch (e) { ElMessage.error(e.message) }
   finally { testing.value = false }
 }
@@ -72,16 +74,16 @@ onActivated(() => load())
 <template>
   <div class="page">
     <el-card shadow="never" style="max-width: 720px">
-      <template #header><span class="section-title" style="margin: 0">邮箱来源配置</span></template>
+      <template #header><span class="section-title" style="margin: 0">{{ locale.t('mailConfig') }}</span></template>
       <p class="hint">
         OpenAI 注册需要邮箱收 OTP。可选 Outlook 接码池、自建 CF Worker，或 IMAP catch-all。
       </p>
       <el-form label-position="top">
-        <el-form-item label="邮箱来源">
+        <el-form-item :label="locale.t('mailSource')">
           <el-radio-group v-model="source">
             <el-radio value="outlook">Outlook 接码池</el-radio>
             <el-radio value="cf_temp">CF Temp Email（自建 catch-all）</el-radio>
-            <el-radio value="imap">IMAP Catch-all</el-radio>
+            <el-radio value="imap">{{ locale.t('imapCatchAll') }}</el-radio>
           </el-radio-group>
         </el-form-item>
 
@@ -127,9 +129,9 @@ onActivated(() => load())
     </el-card>
 
     <FooterToolbar>
-      <template #left>邮箱来源：{{ source === 'cf_temp' ? 'CF Temp Email' : source === 'imap' ? 'IMAP Catch-all' : 'Outlook 接码池' }}</template>
-      <el-button v-if="source === 'cf_temp' || source === 'imap'" :loading="testing" @click="test">测试连接</el-button>
-      <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
+      <template #left>{{ locale.t('mailSource') }}: {{ source === 'cf_temp' ? 'CF Temp Email' : source === 'imap' ? locale.t('imapCatchAll') : 'Outlook' }}</template>
+      <el-button v-if="source === 'cf_temp' || source === 'imap'" :loading="testing" @click="test">{{ locale.t('testConnection') }}</el-button>
+      <el-button type="primary" :loading="saving" @click="save">{{ locale.t('save') }}</el-button>
     </FooterToolbar>
   </div>
 </template>

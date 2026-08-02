@@ -9,12 +9,14 @@ import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 import LogPanel from '@/components/LogPanel.vue'
 import StatusDot from '@/components/StatusDot.vue'
+import { useLocaleStore } from '@/stores/locale'
 
 const router = useRouter()
 const { form } = storeToRefs(useFormStore())
 const proxyStore = useProxyStore()
 const { count: proxyCount } = storeToRefs(proxyStore)
 const runtime = useRuntimeStore()
+const locale = useLocaleStore()
 const { autoStatus } = storeToRefs(runtime)
 
 const st = computed(() => autoStatus.value.state || 'stopped')
@@ -58,24 +60,24 @@ async function call(fn, name) {
 <template>
   <div class="page">
     <el-card shadow="never" style="margin-bottom: 16px">
-      <template #header><span class="section-title" style="margin: 0">全自动批量注册</span></template>
+      <template #header><span class="section-title" style="margin: 0">{{ locale.t('autoRegistration') }}</span></template>
 
       <el-space wrap :size="16" style="margin-bottom: 12px">
-        <el-form-item label="并发" style="margin: 0">
+        <el-form-item :label="locale.t('concurrency')" style="margin: 0">
           <el-input-number v-model="form.autoConcurrency" :min="1" :max="20" />
         </el-form-item>
-        <el-form-item label="冷却(秒)" style="margin: 0">
+        <el-form-item :label="locale.t('cooldown')" style="margin: 0">
           <el-input-number v-model="form.autoCoolDown" :min="0" :max="120" />
         </el-form-item>
-        <el-form-item label="目标数(0=不限)" style="margin: 0">
+        <el-form-item :label="locale.t('target')" style="margin: 0">
           <el-input-number v-model="form.autoTargetCount" :min="0" :max="100000" />
         </el-form-item>
-        <el-form-item label="OTP 等待(秒)" style="margin: 0">
+        <el-form-item :label="locale.t('otpTimeout')" style="margin: 0">
           <el-input-number v-model="form.otpTimeout" :min="10" :max="600" />
         </el-form-item>
       </el-space>
 
-      <el-form-item label="代理池">
+      <el-form-item :label="locale.t('proxyPool')">
         <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
           <el-tag :type="proxyCount ? 'success' : 'info'" effect="light">
             当前 {{ proxyCount }} 个代理
@@ -83,31 +85,31 @@ async function call(fn, name) {
           <span class="hint">
             {{ proxyCount ? '各 worker 按顺序轮流取用' : '为空：每次注册默认从 Proxyscrape 获取代理；失败时停止批量任务' }}
           </span>
-          <el-button size="small" @click="router.push('/proxy')">管理代理池</el-button>
+          <el-button size="small" @click="router.push('/proxy')">{{ locale.t('manageProxy') }}</el-button>
         </div>
       </el-form-item>
 
       <el-form-item>
-        <el-checkbox v-model="form.useDirectConnection">Gunakan koneksi langsung</el-checkbox>
+        <el-checkbox v-model="form.useDirectConnection">{{ locale.t('directConnection') }}</el-checkbox>
       </el-form-item>
 
       <el-space wrap style="margin-top: 8px">
-        <el-button type="primary" :disabled="!canStart" @click="start">开始</el-button>
-        <el-button :disabled="!canPause" @click="call(autoPause, '暂停')">暂停</el-button>
-        <el-button :disabled="!canResume" @click="call(autoResume, '恢复')">恢复</el-button>
-        <el-button type="danger" :disabled="!canStop" @click="call(autoStop, '停止')">停止</el-button>
+        <el-button type="primary" :disabled="!canStart" @click="start">{{ locale.t('start') }}</el-button>
+        <el-button :disabled="!canPause" @click="call(autoPause, locale.t('pause'))">{{ locale.t('pause') }}</el-button>
+        <el-button :disabled="!canResume" @click="call(autoResume, locale.t('resume'))">{{ locale.t('resume') }}</el-button>
+        <el-button type="danger" :disabled="!canStop" @click="call(autoStop, locale.t('stop'))">{{ locale.t('stop') }}</el-button>
       </el-space>
 
       <el-descriptions :column="4" border size="small" style="margin-top: 16px">
-        <el-descriptions-item label="状态"><StatusDot :type="stateType" :text="stateLabel" /></el-descriptions-item>
-        <el-descriptions-item label="成功">
+        <el-descriptions-item :label="locale.t('status')"><StatusDot :type="stateType" :text="stateLabel" /></el-descriptions-item>
+        <el-descriptions-item :label="locale.t('success')">
           <b style="color: var(--el-color-success)">{{ autoStatus.registered_ok || 0 }}</b>
           <span v-if="autoStatus.target_count"> / {{ autoStatus.target_count }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="失败">
+        <el-descriptions-item :label="locale.t('failed')">
           <b style="color: var(--el-color-danger)">{{ autoStatus.registered_fail || 0 }}</b>
         </el-descriptions-item>
-        <el-descriptions-item label="并发">{{ autoStatus.concurrency || 1 }}</el-descriptions-item>
+        <el-descriptions-item :label="locale.t('concurrency')">{{ autoStatus.concurrency || 1 }}</el-descriptions-item>
       </el-descriptions>
 
       <div v-if="workers.length" style="margin-top: 12px">

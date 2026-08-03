@@ -84,6 +84,7 @@ onActivated(() => load())
             <el-radio value="outlook">Outlook 接码池</el-radio>
             <el-radio value="cf_temp">CF Temp Email（自建 catch-all）</el-radio>
             <el-radio value="imap">{{ locale.t('imapCatchAll') }}</el-radio>
+            <el-radio value="imap_pool">IMAP Pool</el-radio>
           </el-radio-group>
         </el-form-item>
 
@@ -125,11 +126,16 @@ onActivated(() => load())
           />
         </template>
 
+        <el-alert
+          v-if="source === 'imap_pool'" type="info" :closable="false" show-icon
+          title="Use the IMAP Pool page to import individual mailboxes. Each mailbox is used once and marked done after successful registration."
+        />
+
       </el-form>
     </el-card>
 
     <FooterToolbar>
-      <template #left>{{ locale.t('mailSource') }}: {{ source === 'cf_temp' ? 'CF Temp Email' : source === 'imap' ? locale.t('imapCatchAll') : 'Outlook' }}</template>
+      <template #left>{{ locale.t('mailSource') }}: {{ source === 'cf_temp' ? 'CF Temp Email' : source === 'imap' ? locale.t('imapCatchAll') : source === 'imap_pool' ? 'IMAP Pool' : 'Outlook' }}</template>
       <el-button v-if="source === 'cf_temp' || source === 'imap'" :loading="testing" @click="test">{{ locale.t('testConnection') }}</el-button>
       <el-button type="primary" :loading="saving" @click="save">{{ locale.t('save') }}</el-button>
     </FooterToolbar>

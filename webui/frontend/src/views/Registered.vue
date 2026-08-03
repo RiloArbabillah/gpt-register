@@ -29,7 +29,7 @@ const PLUS_TYPE = {
   plus_eligible: 'success', plus_active: 'primary', free: 'warning',
   banned: 'danger', error: 'danger',
 }
-const SOURCE_LABEL = { imap: 'IMAP', cf_temp: 'Cloudflare Mail', outlook: 'Outlook' }
+const SOURCE_LABEL = { imap: 'IMAP', imap_pool: 'IMAP Pool', cf_temp: 'Cloudflare Mail', outlook: 'Outlook' }
 function plusOf(row) { return row.plus_check || null }
 
 async function load(resetPage) {

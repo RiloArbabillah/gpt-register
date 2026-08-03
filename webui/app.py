@@ -85,6 +85,42 @@ def api_accounts(status: str = "", limit: int = 50, offset: int = 0):
     return {"ok": True, "items": items, "total": total}
 
 
+class ImapImportReq(BaseModel):
+    text: str
+
+
+@app.post("/api/imap_accounts/import")
+def api_import_imap_accounts(req: ImapImportReq):
+    return {"ok": True, **db.import_imap_accounts(req.text)}
+
+
+@app.get("/api/imap_accounts")
+def api_imap_accounts(status: str = "", limit: int = 50, offset: int = 0):
+    return {"ok": True, "items": db.list_imap_accounts(status, limit, offset), "total": db.count_imap_accounts(status)}
+
+
+class ImapPoolActionReq(BaseModel):
+    emails: Optional[list[str]] = None
+    status: Optional[str] = None
+
+
+@app.post("/api/imap_accounts/reset")
+def api_reset_imap_accounts(req: ImapPoolActionReq):
+    return {"ok": True, "reset": db.reset_imap_accounts(req.emails, req.status or "")}
+
+
+@app.delete("/api/imap_accounts/{email}")
+def api_delete_imap_account(email: str):
+    if not db.delete_imap_accounts([email]):
+        raise HTTPException(404, "not found")
+    return {"ok": True}
+
+
+@app.post("/api/imap_accounts/bulk_delete")
+def api_bulk_delete_imap_accounts(req: ImapPoolActionReq):
+    return {"ok": True, "deleted": db.delete_imap_accounts(req.emails, req.status or "")}
+
+
 @app.delete("/api/accounts/{email}")
 def api_delete_account(email: str):
     ok = db.delete_account(email)
@@ -225,6 +261,10 @@ def api_register(req: RegisterReq):
             "client_id": "",
             "refresh_token": "",
         }
+    elif mail_source == "imap_pool":
+        account = db.claim_imap_account(req.email or "")
+        if not account:
+            raise HTTPException(400, "IMAP mailbox pool tidak memiliki mailbox available")
     elif req.email:
         account = db.claim_account(req.email)
         if not account:
@@ -359,12 +399,12 @@ def api_recover_refresh_token(req: RecoverRefreshTokenReq):
     if registered.get("refresh_token"):
         raise HTTPException(400, "该账号已有 refresh_token")
     mail_source = registered.get("source") or db.get_setting("mail_source", "outlook")
-    account = db.get_account(email)
-    if mail_source != "imap" and not account:
+    account = db.get_imap_account(email) if mail_source == "imap_pool" else db.get_account(email)
+    if mail_source not in ("imap", "imap_pool") and not account:
         raise HTTPException(400, "邮箱池中找不到该账号，无法重新登录获取 RT")
     # IMAP catch-all registrations may not persist a password. AuthFlow derives
     # the same default password from the email for an existing-account login.
-    if mail_source != "imap" and not (registered.get("password") or (account or {}).get("password")):
+    if mail_source not in ("imap", "imap_pool") and not (registered.get("password") or (account or {}).get("password")):
         raise HTTPException(400, "该账号没有保存密码，无法重新登录获取 RT")
     if mail_source == "imap":
         imap = db.get_imap_credentials()
@@ -389,10 +429,10 @@ def api_recover_refresh_token_batch(req: RecoverRefreshTokenBatchReq):
         if not registered or registered.get("refresh_token"):
             continue
         mail_source = registered.get("source") or db.get_setting("mail_source", "outlook")
-        account = db.get_account(email)
-        if mail_source != "imap" and not account:
+        account = db.get_imap_account(email) if mail_source == "imap_pool" else db.get_account(email)
+        if mail_source not in ("imap", "imap_pool") and not account:
             continue
-        if mail_source != "imap" and not (registered.get("password") or (account or {}).get("password")):
+        if mail_source not in ("imap", "imap_pool") and not (registered.get("password") or (account or {}).get("password")):
             continue
         if mail_source == "imap":
             imap = db.get_imap_credentials()

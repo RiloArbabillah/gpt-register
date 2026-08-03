@@ -6,7 +6,7 @@ const STORAGE_KEY = 'gpt_register_locale'
 const messages = {
   zh: {
     overview: '概览', registration: '注册', data: '数据', settings: '配置',
-    dashboard: '仪表盘', import: '导入邮箱', register: '单次注册', auto: '全自动批量',
+    dashboard: '仪表盘', import: '导入邮箱', register: '单次注册', auto: '全自动批量', imapPool: 'IMAP Pool',
     proxy: '代理池', pool: '邮箱列表', registered: '注册结果', runs: '运行记录',
     mail: '邮箱配置', sms: '接码配置', export: '自动导出', other: '其他',
     search: '搜索功能', total: '总计', available: '可用', running: '进行中', done: '完成',
@@ -24,7 +24,7 @@ const messages = {
   en: {
     overview: 'Overview', registration: 'Registration', data: 'Data', settings: 'Settings',
     dashboard: 'Dashboard', import: 'Import Mailboxes', register: 'Single Registration', auto: 'Batch Registration',
-    proxy: 'Proxy Pool', pool: 'Mailbox Pool', registered: 'Registered Accounts', runs: 'Run History',
+  proxy: 'Proxy Pool', pool: 'Mailbox Pool', imapPool: 'IMAP Pool', registered: 'Registered Accounts', runs: 'Run History',
     mail: 'Mail Settings', sms: 'SMS Settings', export: 'Auto Export', other: 'Other',
     search: 'Search features', total: 'Total', available: 'Available', running: 'In progress', done: 'Done',
     failed: 'Failed', light: 'Light mode', dark: 'Dark mode', administrator: 'Administrator',

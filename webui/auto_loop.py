@@ -342,6 +342,8 @@ class AutoLoopController:
                     "email": f"{mail_source}_placeholder_{int(time.time())}_{worker_id}@local",
                     "password": "", "client_id": "", "refresh_token": "",
                 }
+            elif mail_source == "imap_pool":
+                account = db.claim_imap_account()
             else:
                 account = db.claim_next()
             if not account:
@@ -372,7 +374,9 @@ class AutoLoopController:
                 run_id = registrar.start_registration(account, run_options)
             except Exception as e:
                 logger.exception(f"[worker-{worker_id}] 启动注册失败: {e}")
-                if mail_source not in ("cf_temp", "imap"):
+                if mail_source == "imap_pool":
+                    db.release_imap_account(account["email"])
+                elif mail_source not in ("cf_temp", "imap"):
                     db.release_unused(account["email"])
                 time.sleep(2)
                 continue

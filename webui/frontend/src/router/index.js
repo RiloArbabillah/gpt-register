@@ -42,6 +42,12 @@ const routes = [
     meta: { titleKey: 'pool', icon: 'Files', groupKey: 'data' },
   },
   {
+    path: '/imap-pool',
+    name: 'imap-pool',
+    component: () => import('@/views/ImapPool.vue'),
+    meta: { titleKey: 'imapPool', icon: 'Message', groupKey: 'data' },
+  },
+  {
     path: '/registered',
     name: 'registered',
     component: () => import('@/views/Registered.vue'),

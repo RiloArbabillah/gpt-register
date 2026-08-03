@@ -218,6 +218,18 @@ def _do_register(
             logging.getLogger("registrar").info(
                 f"[register] 邮箱来源: imap / domain={imap['domain']}"
             )
+        elif mail_source == "imap_pool":
+            from mail_imap import ImapCatchAllProvider
+
+            missing = [key for key in ("host", "password") if not account.get(key)]
+            if missing:
+                raise RuntimeError("IMAP mailbox 配置不完整（缺 " + ", ".join(missing) + "）")
+            mail = ImapCatchAllProvider(
+                host=account["host"], username=account["email"], password=account["password"],
+                domain=account["email"].rsplit("@", 1)[-1], port=int(account.get("port") or 993),
+                mailbox_email=account["email"],
+            )
+            logging.getLogger("registrar").info(f"[register] 邮箱来源: imap_pool / email={email}")
         else:
             mail = OutlookMailProvider(
                 email=account["email"],
@@ -281,7 +293,9 @@ def _do_register(
         # 落库
         db.save_registered(d)
         # Catch-all 模式下 email 是虚拟占位，不操作 Outlook 号池。
-        if mail_source not in ("cf_temp", "imap"):
+        if mail_source == "imap_pool":
+            db.mark_imap_done(email)
+        elif mail_source not in ("cf_temp", "imap"):
             db.mark_done(email)
 
         # ─ 可选：导出到 CPA / SUB2API 面板（仅勾选启用时才执行） ─
@@ -309,7 +323,12 @@ def _do_register(
         logging.getLogger("registrar").error(f"[register] 失败 (category={category}): {err}")
         if category != "account":
             logging.getLogger("registrar").error(traceback.format_exc())
-        if mail_source not in ("cf_temp", "imap"):
+        if mail_source == "imap_pool":
+            if category == "network":
+                db.release_imap_account(email)
+            else:
+                db.mark_imap_failed(email, f"[{category}] {err}")
+        elif mail_source not in ("cf_temp", "imap"):
             if category == "network":
                 db.release_unused(email)
                 logging.getLogger("registrar").warning(
@@ -508,6 +527,17 @@ def _do_recover_refresh_token(
                 domain=imap["domain"], port=int(imap["port"] or 993),
             )
             logging.getLogger("registrar").info("[recover-rt] memakai IMAP catch-all untuk OTP")
+        elif options.get("mail_source") == "imap_pool":
+            from mail_imap import ImapCatchAllProvider
+
+            if not account:
+                raise RuntimeError("IMAP mailbox pool account tidak ditemukan")
+            mail = ImapCatchAllProvider(
+                host=account["host"], username=account["email"], password=account["password"],
+                domain=account["email"].rsplit("@", 1)[-1], port=int(account.get("port") or 993),
+                mailbox_email=account["email"],
+            )
+            logging.getLogger("registrar").info("[recover-rt] memakai IMAP pool mailbox untuk OTP")
         else:
             mail = OutlookMailProvider(
                 email=email,

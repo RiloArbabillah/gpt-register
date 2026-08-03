@@ -56,6 +56,20 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_outlook_status ON outlook_accounts(status);
 
+        CREATE TABLE IF NOT EXISTS imap_accounts (
+            email           TEXT PRIMARY KEY,
+            password        TEXT NOT NULL,
+            host            TEXT NOT NULL,
+            port            INTEGER NOT NULL DEFAULT 993,
+            status          TEXT NOT NULL DEFAULT 'available',
+            imported_at     REAL,
+            claimed_at      REAL,
+            finished_at     REAL,
+            fail_reason     TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_imap_status ON imap_accounts(status);
+
         CREATE TABLE IF NOT EXISTS settings (
             key     TEXT PRIMARY KEY,
             value   TEXT
@@ -127,6 +141,139 @@ def parse_lines(text: str) -> list[dict]:
             "refresh_token": refresh,
         })
     return out
+
+
+def parse_imap_lines(text: str) -> list[dict]:
+    """Parse IMAP pool rows: email----password----host----port."""
+    out: list[dict] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [part.strip() for part in line.split("----")]
+        if len(parts) != 4 or "@" not in parts[0] or not parts[1] or not parts[2]:
+            continue
+        try:
+            port = int(parts[3] or 993)
+        except ValueError:
+            continue
+        if not 1 <= port <= 65535:
+            continue
+        out.append({"email": parts[0].lower(), "password": parts[1], "host": parts[2], "port": port})
+    return out
+
+
+def import_imap_accounts(text: str) -> dict:
+    rows = parse_imap_lines(text)
+    now = time.time()
+    inserted = updated = skipped = 0
+    with _lock:
+        con = _conn()
+        for row in rows:
+            existing = con.execute("SELECT password, host, port FROM imap_accounts WHERE email=?", (row["email"],)).fetchone()
+            if existing is None:
+                con.execute(
+                    "INSERT INTO imap_accounts(email,password,host,port,status,imported_at) VALUES (?,?,?,?, 'available', ?)",
+                    (row["email"], row["password"], row["host"], row["port"], now),
+                )
+                inserted += 1
+            elif tuple(existing) != (row["password"], row["host"], row["port"]):
+                con.execute(
+                    "UPDATE imap_accounts SET password=?,host=?,port=?,status='available',imported_at=?,fail_reason=NULL WHERE email=?",
+                    (row["password"], row["host"], row["port"], now, row["email"]),
+                )
+                updated += 1
+            else:
+                skipped += 1
+        con.commit()
+    return {"parsed": len(rows), "inserted": inserted, "updated": updated, "skipped": skipped}
+
+
+def list_imap_accounts(status: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
+    con = _conn()
+    if status:
+        cur = con.execute("SELECT email,host,port,status,imported_at,claimed_at,finished_at,fail_reason FROM imap_accounts WHERE status=? ORDER BY imported_at DESC LIMIT ? OFFSET ?", (status, limit, offset))
+    else:
+        cur = con.execute("SELECT email,host,port,status,imported_at,claimed_at,finished_at,fail_reason FROM imap_accounts ORDER BY imported_at DESC LIMIT ? OFFSET ?", (limit, offset))
+    return [dict(row) for row in cur.fetchall()]
+
+
+def count_imap_accounts(status: str = "") -> int:
+    con = _conn()
+    if status:
+        return con.execute("SELECT COUNT(*) FROM imap_accounts WHERE status=?", (status,)).fetchone()[0]
+    return con.execute("SELECT COUNT(*) FROM imap_accounts").fetchone()[0]
+
+
+def claim_imap_account(email: str = "") -> Optional[dict]:
+    with _lock:
+        con = _conn()
+        if email:
+            row = con.execute("SELECT * FROM imap_accounts WHERE lower(email)=lower(?) AND status IN ('available','failed')", (email,)).fetchone()
+        else:
+            row = con.execute("SELECT * FROM imap_accounts WHERE status='available' ORDER BY imported_at ASC LIMIT 1").fetchone()
+        if not row:
+            return None
+        rc = con.execute("UPDATE imap_accounts SET status='in_use',claimed_at=?,fail_reason=NULL WHERE email=? AND status IN ('available','failed')", (time.time(), row["email"]))
+        con.commit()
+        return dict(row) if rc.rowcount == 1 else None
+
+
+def get_imap_account(email: str) -> Optional[dict]:
+    con = _conn()
+    row = con.execute("SELECT * FROM imap_accounts WHERE lower(email)=lower(?)", (email,)).fetchone()
+    return dict(row) if row else None
+
+
+def mark_imap_done(email: str) -> None:
+    with _lock:
+        con = _conn()
+        con.execute("UPDATE imap_accounts SET status='done',finished_at=?,fail_reason=NULL WHERE lower(email)=lower(?)", (time.time(), email))
+        con.commit()
+
+
+def mark_imap_failed(email: str, reason: str = "") -> None:
+    with _lock:
+        con = _conn()
+        con.execute("UPDATE imap_accounts SET status='failed',finished_at=?,fail_reason=? WHERE lower(email)=lower(?)", (time.time(), reason[:500], email))
+        con.commit()
+
+
+def release_imap_account(email: str) -> None:
+    with _lock:
+        con = _conn()
+        con.execute("UPDATE imap_accounts SET status='available',claimed_at=NULL WHERE lower(email)=lower(?) AND status='in_use'", (email,))
+        con.commit()
+
+
+def reset_imap_accounts(emails: Optional[list[str]] = None, status: str = "") -> int:
+    with _lock:
+        con = _conn()
+        if emails:
+            clean = [email.strip().lower() for email in emails if email.strip()]
+            marks = ",".join("?" for _ in clean)
+            rc = con.execute(f"UPDATE imap_accounts SET status='available',claimed_at=NULL,finished_at=NULL,fail_reason=NULL WHERE email IN ({marks}) AND status IN ('done','failed')", clean)
+        elif status in ("done", "failed"):
+            rc = con.execute("UPDATE imap_accounts SET status='available',claimed_at=NULL,finished_at=NULL,fail_reason=NULL WHERE status=?", (status,))
+        else:
+            rc = con.execute("UPDATE imap_accounts SET status='available',claimed_at=NULL,finished_at=NULL,fail_reason=NULL WHERE status IN ('done','failed')")
+        con.commit()
+        return rc.rowcount
+
+
+def delete_imap_accounts(emails: Optional[list[str]] = None, status: str = "") -> int:
+    with _lock:
+        con = _conn()
+        if emails:
+            clean = [email.strip().lower() for email in emails if email.strip()]
+            marks = ",".join("?" for _ in clean)
+            rc = con.execute(f"DELETE FROM imap_accounts WHERE email IN ({marks})", clean)
+        elif status:
+            rc = con.execute("DELETE FROM imap_accounts WHERE status=?", (status,))
+        else:
+            rc = con.execute("DELETE FROM imap_accounts")
+        con.commit()
+        return rc.rowcount
 
 
 def import_accounts(text: str) -> dict:
@@ -665,7 +812,7 @@ def save_mail_config(data: dict) -> None:
     """保存邮箱配置。admin_token 传 '***' 表示不修改。"""
     if "mail_source" in data:
         src = str(data["mail_source"]).strip().lower()
-        if src not in ("outlook", "cf_temp", "imap"):
+        if src not in ("outlook", "cf_temp", "imap", "imap_pool"):
             src = "outlook"
         set_setting("mail_source", src)
     if "cf_api_url" in data:

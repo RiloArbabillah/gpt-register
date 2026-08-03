@@ -50,7 +50,7 @@ def _message_body(message: email.message.Message) -> str:
 class ImapCatchAllProvider:
     """Generate unique catch-all addresses and retrieve their OTPs through IMAP."""
 
-    def __init__(self, host: str, username: str, password: str, domain: str, port: int = 993):
+    def __init__(self, host: str, username: str, password: str, domain: str, port: int = 993, mailbox_email: str = ""):
         if not all((host, username, password, domain)):
             raise ValueError("IMAP host, username, password, and domain are required")
         self.host = host.strip()
@@ -61,8 +61,12 @@ class ImapCatchAllProvider:
         self.last_persona = None
         self.catch_all_domain = self.domain
         self._rng = random.SystemRandom()
+        self.mailbox_email = mailbox_email.strip().lower()
 
     def create_mailbox(self) -> str:
+        if self.mailbox_email:
+            logger.info("[imap] using pool mailbox: %s", self.mailbox_email)
+            return self.mailbox_email
         local = "".join(self._rng.choices(string.ascii_lowercase + string.digits, k=12))
         address = f"{local}-gpt@{self.domain}"
         logger.info("[imap] using catch-all address: %s", address)

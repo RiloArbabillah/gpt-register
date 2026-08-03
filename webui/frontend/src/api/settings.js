@@ -5,6 +5,12 @@ export const getMailConfig = () => http.get('/api/settings/mail')
 export const saveMailConfig = (payload) => http.post('/api/settings/mail', payload)
 export const testMail = () => http.post('/api/settings/mail/test')
 
+export const importImapAccounts = (text) => http.post('/api/imap_accounts/import', { text })
+export const listImapAccounts = (params) => http.get('/api/imap_accounts', { params })
+export const resetImapAccounts = (emails, status = '') => http.post('/api/imap_accounts/reset', { emails, status })
+export const deleteImapAccount = (email) => http.delete(`/api/imap_accounts/${encodeURIComponent(email)}`)
+export const bulkDeleteImapAccounts = (payload) => http.post('/api/imap_accounts/bulk_delete', payload)
+
 // ──────────────── SMS 接码配置 ────────────────
 export const getSmsConfig = () => http.get('/api/settings/sms')
 export const saveSmsConfig = (payload) => http.post('/api/settings/sms', payload)

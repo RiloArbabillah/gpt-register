@@ -539,8 +539,10 @@ class SmsBowerProvider(BaseSmsProvider):
 
         with _SMS_VERIFY_LOCK:
             with _SMS_CACHE_LOCK:
-                # 复用 cache（仅当用户许可且 cache 国家在候选列表里）
-                cache = self._load_cache(service_code, country_candidates[0]) if self.reuse_phone_to_max else None
+                # A valid cached number is always the first choice. The reuse
+                # toggle controls whether a newly acquired number is kept after
+                # success; it must not make an existing usable cache invisible.
+                cache = self._load_cache(service_code, country_candidates[0])
                 if cache and str(cache.get("country") or "") in country_candidates:
                     activation = SmsActivation(
                         activation_id=str(cache["activation_id"]),

@@ -3,7 +3,7 @@ import { computed, onActivated, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  listRegistered, getRegistered, deleteRegistered,
+  listRegistered, getRegistered, getRegisteredEmails, deleteRegistered,
   bulkDeleteRegistered, checkPlus, recoverRefreshToken, recoverRefreshTokenBatch,
 } from '@/api/register'
 import { copyText, fmtTime } from '@/api/request'
@@ -24,6 +24,12 @@ const loading = ref(false)
 const checking = ref(false)
 const recovering = ref(false)
 const checkResult = ref('')
+const emailLoading = ref({})
+const emailVisible = ref(false)
+const emailAccount = ref('')
+const emailSource = ref('')
+const emailMessages = ref([])
+const emailRefreshing = ref(false)
 
 const PLUS_TYPE = {
   plus_eligible: 'success', plus_active: 'primary', free: 'warning',
@@ -31,6 +37,11 @@ const PLUS_TYPE = {
 }
 const SOURCE_LABEL = { imap: 'IMAP', imap_pool: 'IMAP Pool', cf_temp: 'Cloudflare Mail', outlook: 'Outlook' }
 function plusOf(row) { return row.plus_check || null }
+function formatEmailTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
 
 async function load(resetPage) {
   if (resetPage) page.value = 1
@@ -126,6 +137,31 @@ async function recoverSelectedRt() {
     useRuntimeStore().streamRun(r.run_id)
   } catch (e) { ElMessage.error(e.message) }
   finally { recovering.value = false }
+}
+
+async function refreshEmailMessages(email, closeOnError = true) {
+  emailRefreshing.value = true
+  try {
+    const result = await getRegisteredEmails(email, 10)
+    emailSource.value = SOURCE_LABEL[result.source] || result.source || 'Mailbox'
+    emailMessages.value = result.messages || []
+  } catch (e) {
+    if (closeOnError) emailVisible.value = false
+    ElMessage.error('Failed to fetch emails: ' + e.message)
+  } finally {
+    emailRefreshing.value = false
+  }
+}
+
+async function checkEmail(email) {
+  emailLoading.value = { ...emailLoading.value, [email]: true }
+  emailAccount.value = email
+  emailVisible.value = true
+  emailMessages.value = []
+  await refreshEmailMessages(email)
+  const next = { ...emailLoading.value }
+  delete next[email]
+  emailLoading.value = next
 }
 
 // 凭证弹窗
@@ -241,6 +277,7 @@ onActivated(() => load())
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text @click="viewCred(row.email)">查看凭证</el-button>
+            <el-button size="small" text @click="checkEmail(row.email)" :loading="!!emailLoading[row.email]">Check Email</el-button>
             <el-button v-if="!row.rt_len" size="small" text type="primary" :loading="recovering" :disabled="recovering" @click="recoverRt(row)">Get RT</el-button>
             <el-button size="small" text type="danger" @click="deleteOne(row.email)">删除</el-button>
           </template>
@@ -272,6 +309,32 @@ onActivated(() => load())
           <el-input :model-value="r.val" type="textarea" :rows="2" readonly class="mono" />
         </div>
         <el-empty v-if="!credRows.length" description="无凭证字段" />
+      </el-dialog>
+
+      <el-dialog v-model="emailVisible" width="820px" top="6vh">
+        <template #header>
+          <div style="display: flex; align-items: center; gap: 12px; width: 100%">
+            <span style="font-weight: 600">Recent Emails: {{ emailAccount }}</span>
+            <el-button size="small" :loading="emailRefreshing" @click="refreshEmailMessages(emailAccount, false)">
+              <el-icon><Refresh /></el-icon>Refresh
+            </el-button>
+          </div>
+        </template>
+        <div class="hint" style="margin-bottom: 12px">{{ emailSource }} · {{ emailMessages.length }} message(s)</div>
+        <el-empty v-if="!emailMessages.length" description="No recent emails found" />
+        <el-collapse v-else>
+          <el-collapse-item v-for="message in emailMessages" :key="message.id" :name="message.id">
+            <template #title>
+              <div style="display: flex; gap: 12px; align-items: center; width: 100%; min-width: 0">
+                <strong style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ message.subject }}</strong>
+                <span class="hint" style="margin-left: auto; flex-shrink: 0">{{ formatEmailTime(message.received_at) }}</span>
+              </div>
+            </template>
+            <div class="hint" style="margin-bottom: 8px">From: {{ message.from || 'Unknown sender' }}</div>
+            <div class="hint" style="margin-bottom: 8px">To: {{ (message.to || []).join(', ') || emailAccount }}</div>
+            <p style="white-space: pre-wrap; word-break: break-word; margin: 0">{{ message.body || message.preview || '(empty message)' }}</p>
+          </el-collapse-item>
+        </el-collapse>
       </el-dialog>
     </el-card>
   </div>

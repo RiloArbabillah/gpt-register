@@ -352,6 +352,55 @@ def api_registered_one(email: str):
     return {"ok": True, "data": row}
 
 
+@app.get("/api/registered/{email}/emails")
+def api_registered_emails(email: str, limit: int = 10):
+    """Fetch recent messages without persisting mailbox contents."""
+    email = email.strip().lower()
+    registered = db.get_registered(email)
+    if not registered:
+        raise HTTPException(404, "Registered account was not found")
+    limit = max(1, min(int(limit or 10), 10))
+    source = registered.get("source") or db.get_setting("mail_source", "outlook")
+    try:
+        from .email_reader import fetch_cloudflare_messages, fetch_imap_messages, fetch_outlook_messages
+
+        if source == "imap":
+            cfg = db.get_imap_credentials()
+            required = ("host", "username", "password")
+            if not all(cfg.get(key) for key in required):
+                raise HTTPException(400, "IMAP mailbox configuration is incomplete")
+            messages = fetch_imap_messages(cfg["host"], cfg["username"], cfg["password"], email, int(cfg["port"] or 993), limit)
+        elif source == "imap_pool":
+            account = db.get_imap_account(email)
+            if not account:
+                raise HTTPException(400, "The IMAP Pool mailbox was not found")
+            messages = fetch_imap_messages(account["host"], account["email"], account["password"], email, int(account.get("port") or 993), limit)
+        elif source == "cf_temp":
+            cfg = db.get_mail_config()
+            if not cfg.get("cf_api_url") or not cfg.get("cf_domain") or not db.get_cf_admin_token():
+                raise HTTPException(400, "Cloudflare Mail configuration is incomplete")
+            from mail_cf import CFTempEmailProvider
+            provider = CFTempEmailProvider(cfg["cf_api_url"], db.get_cf_admin_token(), cfg["cf_domain"])
+            messages = fetch_cloudflare_messages(provider, email, limit)
+        else:
+            account = db.get_account(email)
+            if not account:
+                raise HTTPException(400, "The Outlook mailbox was not found")
+            messages = fetch_outlook_messages(
+                email,
+                registered.get("password") or account.get("password", ""),
+                account.get("refresh_token", ""),
+                account.get("client_id", ""),
+                limit,
+            )
+        return {"ok": True, "email": email, "source": source, "messages": messages[:limit]}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Email fetch failed for %s (%s): %s", email, source, type(exc).__name__)
+        raise HTTPException(502, "Unable to fetch recent emails from the mailbox") from exc
+
+
 @app.delete("/api/registered/{email}")
 def api_delete_registered(email: str):
     ok = db.delete_registered(email)

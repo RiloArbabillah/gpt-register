@@ -13,6 +13,9 @@ export const listRegistered = (params) =>
 export const getRegistered = (email) =>
   http.get(`/api/registered/${encodeURIComponent(email)}`)
 
+export const getRegisteredEmails = (email, limit = 10) =>
+  http.get(`/api/registered/${encodeURIComponent(email)}/emails`, { params: { limit } })
+
 export const deleteRegistered = (email) =>
   http.delete(`/api/registered/${encodeURIComponent(email)}`)
 

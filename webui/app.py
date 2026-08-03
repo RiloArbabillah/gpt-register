@@ -325,6 +325,20 @@ class BulkDeleteRegisteredReq(BaseModel):
     all: bool = False
 
 
+class RecoverRefreshTokenReq(BaseModel):
+    email: str
+    proxy: str = ""
+    use_direct_connection: bool = False
+    otp_timeout: int = 10
+
+
+class RecoverRefreshTokenBatchReq(BaseModel):
+    emails: list[str]
+    proxy: str = ""
+    use_direct_connection: bool = False
+    otp_timeout: int = 10
+
+
 @app.post("/api/registered/bulk_delete")
 def api_bulk_delete_registered(req: BulkDeleteRegisteredReq):
     if req.all:
@@ -334,6 +348,64 @@ def api_bulk_delete_registered(req: BulkDeleteRegisteredReq):
         n = db.delete_registered_by_emails(req.emails)
         return {"ok": True, "deleted": n, "by": "emails"}
     raise HTTPException(400, "需要 emails 或 all=true")
+
+
+@app.post("/api/registered/recover_refresh_token")
+def api_recover_refresh_token(req: RecoverRefreshTokenReq):
+    email = req.email.strip().lower()
+    registered = db.get_registered(email)
+    if not registered:
+        raise HTTPException(404, "注册结果不存在")
+    if registered.get("refresh_token"):
+        raise HTTPException(400, "该账号已有 refresh_token")
+    mail_source = registered.get("source") or db.get_setting("mail_source", "outlook")
+    account = db.get_account(email)
+    if mail_source != "imap" and not account:
+        raise HTTPException(400, "邮箱池中找不到该账号，无法重新登录获取 RT")
+    # IMAP catch-all registrations may not persist a password. AuthFlow derives
+    # the same default password from the email for an existing-account login.
+    if mail_source != "imap" and not (registered.get("password") or (account or {}).get("password")):
+        raise HTTPException(400, "该账号没有保存密码，无法重新登录获取 RT")
+    if mail_source == "imap":
+        imap = db.get_imap_credentials()
+        missing = [key for key in ("host", "username", "password", "domain") if not imap[key]]
+        if missing:
+            raise HTTPException(400, "IMAP belum lengkap: " + ", ".join(missing))
+    run_id = registrar.start_refresh_token_recovery(registered, account, {
+        "proxy": req.proxy,
+        "use_direct_connection": req.use_direct_connection,
+        "otp_timeout": req.otp_timeout,
+        "mail_source": mail_source,
+    })
+    return {"ok": True, "run_id": run_id, "email": email}
+
+
+@app.post("/api/registered/recover_refresh_token_batch")
+def api_recover_refresh_token_batch(req: RecoverRefreshTokenBatchReq):
+    entries = []
+    for raw_email in dict.fromkeys(req.emails):
+        email = raw_email.strip().lower()
+        registered = db.get_registered(email)
+        if not registered or registered.get("refresh_token"):
+            continue
+        mail_source = registered.get("source") or db.get_setting("mail_source", "outlook")
+        account = db.get_account(email)
+        if mail_source != "imap" and not account:
+            continue
+        if mail_source != "imap" and not (registered.get("password") or (account or {}).get("password")):
+            continue
+        if mail_source == "imap":
+            imap = db.get_imap_credentials()
+            if not all(imap[key] for key in ("host", "username", "password", "domain")):
+                raise HTTPException(400, "IMAP belum lengkap")
+        entries.append({"registered": registered, "account": account, "mail_source": mail_source})
+    if not entries:
+        raise HTTPException(400, "没有可获取 RT 的选中账号")
+    run_id = registrar.start_refresh_token_recovery_batch(entries, {
+        "proxy": req.proxy, "use_direct_connection": req.use_direct_connection,
+        "otp_timeout": req.otp_timeout,
+    })
+    return {"ok": True, "run_id": run_id, "count": len(entries)}
 
 
 # ──────────────────────── 邮箱来源配置 ────────────────────────

@@ -4,7 +4,7 @@ import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listRegistered, getRegistered, deleteRegistered,
-  bulkDeleteRegistered, checkPlus,
+  bulkDeleteRegistered, checkPlus, recoverRefreshToken, recoverRefreshTokenBatch,
 } from '@/api/register'
 import { copyText, fmtTime } from '@/api/request'
 import { useFormStore } from '@/stores/form'
@@ -22,12 +22,14 @@ const filter = ref('all')
 const selected = ref([])
 const loading = ref(false)
 const checking = ref(false)
+const recovering = ref(false)
 const checkResult = ref('')
 
 const PLUS_TYPE = {
   plus_eligible: 'success', plus_active: 'primary', free: 'warning',
   banned: 'danger', error: 'danger',
 }
+const SOURCE_LABEL = { imap: 'IMAP', cf_temp: 'Cloudflare Mail', outlook: 'Outlook' }
 function plusOf(row) { return row.plus_check || null }
 
 async function load(resetPage) {
@@ -94,6 +96,38 @@ async function deleteAll() {
   catch (e) { ElMessage.error(e.message) }
 }
 
+async function recoverRt(row) {
+  if (row.rt_len > 0) return
+  if (!(await confirm(`Log in again as ${row.email} to retrieve its refresh token?`))) return
+  recovering.value = true
+  try {
+    const r = await recoverRefreshToken({
+      email: row.email,
+      proxy: form.value.proxy.trim(),
+      use_direct_connection: form.value.useDirectConnection,
+      otp_timeout: parseInt(form.value.otpTimeout, 10) || 10,
+    })
+    ElMessage.info(`Pengambilan RT dimulai untuk ${r.email}`)
+    useRuntimeStore().streamRun(r.run_id)
+  } catch (e) { ElMessage.error(e.message) }
+  finally { recovering.value = false }
+}
+async function recoverSelectedRt() {
+  const emails = selected.value.filter((row) => !row.rt_len).map((row) => row.email)
+  if (!emails.length) return
+  if (!(await confirm(`Retrieve refresh tokens for ${emails.length} selected account(s)?`))) return
+  recovering.value = true
+  try {
+    const r = await recoverRefreshTokenBatch({
+      emails, proxy: form.value.proxy.trim(), use_direct_connection: form.value.useDirectConnection,
+      otp_timeout: parseInt(form.value.otpTimeout, 10) || 10,
+    })
+    ElMessage.info(`RT recovery started for ${r.count} account(s)`)
+    useRuntimeStore().streamRun(r.run_id)
+  } catch (e) { ElMessage.error(e.message) }
+  finally { recovering.value = false }
+}
+
 // 凭证弹窗
 const credVisible = ref(false)
 const credEmail = ref('')
@@ -148,6 +182,9 @@ onActivated(() => load())
         <el-button :loading="checking" :disabled="!selected.length" @click="doCheck('selected')">
           检测选中 ({{ selected.length }})
         </el-button>
+        <el-button :loading="recovering" :disabled="recovering || !selected.some((r) => !r.rt_len)" @click="recoverSelectedRt">
+          Get RT Selected
+        </el-button>
         <el-button type="danger" plain :disabled="!selected.length" @click="deleteSelected">
           删除选中 ({{ selected.length }})
         </el-button>
@@ -163,6 +200,11 @@ onActivated(() => load())
       >
         <el-table-column type="selection" width="44" />
         <el-table-column prop="email" label="邮箱" min-width="200" show-overflow-tooltip />
+        <el-table-column label="Source" width="130">
+          <template #default="{ row }">
+            <el-tag size="small" type="info">{{ SOURCE_LABEL[row.source] || row.source || 'IMAP' }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="Plus状态" width="120">
           <template #default="{ row }">
             <StatusDot v-if="plusOf(row)" :type="PLUS_TYPE[plusOf(row).status] || 'info'" :text="plusOf(row).label" />
@@ -196,9 +238,10 @@ onActivated(() => load())
         <el-table-column label="时间" width="160">
           <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text @click="viewCred(row.email)">查看凭证</el-button>
+            <el-button v-if="!row.rt_len" size="small" text type="primary" :loading="recovering" :disabled="recovering" @click="recoverRt(row)">Get RT</el-button>
             <el-button size="small" text type="danger" @click="deleteOne(row.email)">删除</el-button>
           </template>
         </el-table-column>

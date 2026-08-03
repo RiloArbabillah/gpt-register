@@ -22,6 +22,12 @@ export const bulkDeleteRegistered = (payload) =>
 export const checkPlus = (emails, proxy = '') =>
   http.post('/api/registered/check_plus', { emails, proxy })
 
+export const recoverRefreshToken = (payload) =>
+  http.post('/api/registered/recover_refresh_token', payload)
+
+export const recoverRefreshTokenBatch = (payload) =>
+  http.post('/api/registered/recover_refresh_token_batch', payload)
+
 export const exportToPanel = (email, targets) =>
   http.post('/api/registered/export_to_panel', { email, targets })
 

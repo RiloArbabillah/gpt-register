@@ -72,6 +72,7 @@ def init_db():
             csrf_token      TEXT,
             cookie_header   TEXT,
             extra_json      TEXT,
+            source          TEXT NOT NULL DEFAULT 'imap',
             created_at      REAL
         );
 
@@ -92,6 +93,14 @@ def init_db():
     cols = {r[1] for r in cur.fetchall()}
     if "error_category" not in cols:
         con.execute("ALTER TABLE runs ADD COLUMN error_category TEXT")
+        con.commit()
+
+    # Registered results created before source tracking all came from IMAP.
+    cur = con.execute("PRAGMA table_info(registered)")
+    registered_cols = {r[1] for r in cur.fetchall()}
+    if "source" not in registered_cols:
+        con.execute("ALTER TABLE registered ADD COLUMN source TEXT")
+        con.execute("UPDATE registered SET source='imap' WHERE source IS NULL OR source='' ")
         con.commit()
 
 
@@ -398,7 +407,7 @@ def save_registered(d: dict) -> None:
     if not email:
         return
     extra = {k: v for k, v in d.items() if k not in {
-        "email", "password", "access_token", "session_token", "refresh_token",
+        "email", "password", "access_token", "session_token", "refresh_token", "source",
         "id_token", "device_id", "csrf_token", "cookie_header",
     }}
     with _lock:
@@ -406,8 +415,8 @@ def save_registered(d: dict) -> None:
         con.execute(
             "INSERT OR REPLACE INTO registered "
             "(email, password, access_token, session_token, refresh_token, "
-            "id_token, device_id, csrf_token, cookie_header, extra_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "id_token, device_id, csrf_token, cookie_header, extra_json, source, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 email,
                 d.get("password", ""),
@@ -419,6 +428,7 @@ def save_registered(d: dict) -> None:
                 d.get("csrf_token", ""),
                 d.get("cookie_header", ""),
                 json.dumps(extra, ensure_ascii=False) if extra else None,
+                d.get("source", "imap"),
                 time.time(),
             ),
         )
@@ -446,6 +456,23 @@ def update_plus_check(email: str, plus_info: dict) -> None:
             (json.dumps(extra, ensure_ascii=False), email),
         )
         con.commit()
+
+
+def update_registered_refresh_token(email: str, refresh_token: str, id_token: str = "") -> bool:
+    """Simpan RT hasil recovery tanpa menimpa kredensial yang sudah ada."""
+    email = (email or "").strip().lower()
+    refresh_token = (refresh_token or "").strip()
+    if not email or not refresh_token:
+        return False
+    with _lock:
+        con = _conn()
+        rc = con.execute(
+            "UPDATE registered SET refresh_token=?, id_token=COALESCE(NULLIF(?, ''), id_token) "
+            "WHERE email=? AND coalesce(length(refresh_token), 0)=0",
+            (refresh_token, id_token or "", email),
+        )
+        con.commit()
+        return rc.rowcount == 1
 
 
 def _registered_where(filt: str) -> str:
@@ -476,7 +503,7 @@ def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all") ->
     cur = con.execute(
         f"SELECT email, password, "
         f"length(access_token) AS at_len, length(session_token) AS st_len, "
-        f"length(refresh_token) AS rt_len, extra_json, created_at FROM registered "
+        f"length(refresh_token) AS rt_len, source, extra_json, created_at FROM registered "
         f"{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
         (limit, offset),
     )

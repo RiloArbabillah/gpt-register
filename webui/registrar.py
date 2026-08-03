@@ -29,6 +29,7 @@ from . import db  # noqa: E402
 # run_id -> queue of log strings; sentinel = None 表示流结束
 _run_queues: dict[str, queue.Queue] = {}
 _lock = threading.Lock()
+_refresh_token_recoveries: set[str] = set()
 
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -266,6 +267,7 @@ def _do_register(
         d = {
             "email": full.get("email", ""),
             "password": full.get("password", ""),
+            "source": mail_source,
         }
         if options.get("want_access_token", True):
             d["access_token"] = full.get("access_token", "")
@@ -394,13 +396,18 @@ def _try_export_to_panels(run_id: str, cred: dict) -> None:
         pass
 
 
-def _build_sms_callback(run_id: str) -> Optional[PhoneCallbackController]:
+def _build_sms_callback(run_id: str, *, force_reuse_three_times: bool = False) -> Optional[PhoneCallbackController]:
     """根据 webui 配置创建 SMS 接码 controller。
 
     未启用接码或未配置 API key 时返回 None，flow 会回退到环境变量路径。
     log_fn 把租号/等码的状态推到 SSE 流，前端可见。
     """
     cfg = db.get_sms_internal_config()
+    if force_reuse_three_times:
+        # Batch RT uses one cached number for at most three successful accounts.
+        # SmsBower marks rejected numbers as non-reusable, so the next attempt
+        # automatically rents a replacement number.
+        cfg = {**cfg, "sms_reuse_phone": True, "sms_phone_success_max": "3"}
     if not cfg.get("sms_enabled"):
         return None
     api_key = (cfg.get("sms_api_key") or "").strip()
@@ -449,6 +456,185 @@ def start_registration(account: dict, options: dict) -> str:
         name=f"register-{run_id}",
     )
     th.start()
+    return run_id
+
+
+def _do_recover_refresh_token(
+    run_id: str, registered: dict, account: Optional[dict], options: dict, log_file: Path,
+    complete_run: bool = True, force_sms_reuse_three_times: bool = False,
+):
+    """Login ulang akun existing untuk melengkapi refresh token yang belum tersimpan."""
+    handler = QueueLogHandler(run_id, log_file)
+    handler.setLevel(logging.INFO)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    if root_logger.level > logging.INFO or root_logger.level == 0:
+        root_logger.setLevel(logging.INFO)
+
+    email = registered["email"]
+    saved_env = {}
+    try:
+        env_overrides = {
+            "WEBUI_ALLOW_LOGIN": "1",
+            "OTP_TIMEOUT": str(int(options.get("otp_timeout") or 180)),
+            "OAUTH_CODEX_RT_EXCHANGE": "1",
+            "OAUTH_CODEX_RT_BEFORE_CALLBACK": "1",
+        }
+        for key, value in env_overrides.items():
+            saved_env[key] = os.environ.get(key)
+            os.environ[key] = value
+
+        configured_proxy = (options.get("proxy") or "").strip()
+        if options.get("use_direct_connection"):
+            selected_proxy = ""
+            logging.getLogger("registrar").warning("[recover-rt] direct connection explicitly selected")
+        elif configured_proxy:
+            selected_proxy = configured_proxy
+        else:
+            from proxy_proxyscrape import get_default_proxy
+            selected_proxy = get_default_proxy()
+            if not selected_proxy:
+                raise RuntimeError("proxy_unavailable: tidak ada proxy tersedia; aktifkan koneksi langsung atau isi proxy.")
+
+        cfg = Config()
+        cfg.proxy = selected_proxy or None
+        password = registered.get("password") or (account or {}).get("password", "")
+        if options.get("mail_source") == "imap":
+            from mail_imap import ImapCatchAllProvider
+
+            imap = db.get_imap_credentials()
+            mail = ImapCatchAllProvider(
+                host=imap["host"], username=imap["username"], password=imap["password"],
+                domain=imap["domain"], port=int(imap["port"] or 993),
+            )
+            logging.getLogger("registrar").info("[recover-rt] memakai IMAP catch-all untuk OTP")
+        else:
+            mail = OutlookMailProvider(
+                email=email,
+                password=password,
+                client_id=(account or {}).get("client_id", ""),
+                refresh_token=(account or {}).get("refresh_token", ""),
+            )
+        _emit_status(run_id, "phase", {"phase": "recovering_refresh_token", "email": email})
+        logging.getLogger("registrar").info("[recover-rt] mulai login ulang: %s", email)
+        result = AuthFlow(
+            cfg,
+            sms_callback=_build_sms_callback(run_id, force_reuse_three_times=force_sms_reuse_three_times),
+        ).run_protocol_login(
+            mail, email, password
+        ).to_dict()
+        refresh_token = result.get("refresh_token", "")
+        if not refresh_token:
+            raise RuntimeError("login selesai tetapi refresh_token tidak didapat")
+        if not db.update_registered_refresh_token(email, refresh_token, result.get("id_token", "")):
+            raise RuntimeError("refresh_token tidak disimpan: akun sudah memiliki RT atau data tidak ditemukan")
+
+        # Reuse the configured CPA/SUB2API auto-export flow after a successful
+        # RT recovery. Export errors are logged but do not invalidate the RT.
+        recovered_cred = db.get_registered(email)
+        if recovered_cred:
+            _try_export_to_panels(run_id, recovered_cred)
+
+        summary = {"email": email, "access_token_len": 0, "session_token_len": 0,
+                   "refresh_token_len": len(refresh_token), "partial": False}
+        if complete_run:
+            db.finish_run(run_id, "done")
+            _emit_status(run_id, "done", summary)
+        logging.getLogger("registrar").info("[recover-rt] selesai email=%s rt=%s", email, len(refresh_token))
+    except Exception as e:
+        error = str(e)
+        category = classify_error(error)
+        if complete_run:
+            db.finish_run(run_id, "failed", error, category=category)
+            _emit_status(run_id, "error", {"message": error, "category": category})
+        logging.getLogger("registrar").error("[recover-rt] gagal: %s", error)
+    finally:
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        try:
+            root_logger.removeHandler(handler)
+            handler.close()
+        except Exception:
+            pass
+        q = _run_queues.get(run_id)
+        if q is not None and complete_run:
+            q.put(None)
+        with _lock:
+            _refresh_token_recoveries.discard(email.lower())
+
+
+def start_refresh_token_recovery(registered: dict, account: Optional[dict], options: dict) -> str:
+    """Start a non-destructive RT recovery run for an existing registered account."""
+    email = registered["email"].lower()
+    with _lock:
+        if email in _refresh_token_recoveries:
+            raise RuntimeError("akun ini sedang dalam proses pengambilan refresh_token")
+        _refresh_token_recoveries.add(email)
+
+    run_id = uuid.uuid4().hex[:12]
+    log_file = LOG_DIR / f"{run_id}.log"
+    db.create_run(run_id, registered["email"], str(log_file))
+    with _lock:
+        _run_queues[run_id] = queue.Queue()
+    threading.Thread(
+        target=_do_recover_refresh_token,
+        args=(run_id, registered, account, options, log_file),
+        daemon=True,
+        name=f"recover-rt-{run_id}",
+    ).start()
+    return run_id
+
+
+def _do_recover_refresh_token_batch(run_id: str, entries: list[dict], options: dict, log_file: Path):
+    succeeded = failed = 0
+    try:
+        for index, entry in enumerate(entries, start=1):
+            registered = entry["registered"]
+            email = registered["email"]
+            logging.getLogger("registrar").info("[recover-rt] batch %s/%s: %s", index, len(entries), email)
+            before = db.get_registered(email)
+            _do_recover_refresh_token(
+                run_id, registered, entry.get("account"),
+                {**options, "mail_source": entry["mail_source"]}, log_file,
+                complete_run=False, force_sms_reuse_three_times=True,
+            )
+            after = db.get_registered(email)
+            if after and after.get("refresh_token") and not (before or {}).get("refresh_token"):
+                succeeded += 1
+            else:
+                failed += 1
+        db.finish_run(run_id, "done" if not failed else "failed", "" if not failed else f"{failed} akun gagal")
+        _emit_status(run_id, "done", {
+            "email": f"Batch RT recovery: {succeeded}/{len(entries)}", "access_token_len": 0,
+            "session_token_len": 0, "refresh_token_len": succeeded, "partial": bool(failed),
+        })
+    finally:
+        q = _run_queues.get(run_id)
+        if q is not None:
+            q.put(None)
+
+
+def start_refresh_token_recovery_batch(entries: list[dict], options: dict) -> str:
+    if not entries:
+        raise RuntimeError("tidak ada akun tanpa refresh_token untuk diproses")
+    emails = [entry["registered"]["email"].lower() for entry in entries]
+    with _lock:
+        busy = [email for email in emails if email in _refresh_token_recoveries]
+        if busy:
+            raise RuntimeError(f"akun sedang dalam proses pengambilan refresh_token: {busy[0]}")
+        _refresh_token_recoveries.update(emails)
+    run_id = uuid.uuid4().hex[:12]
+    log_file = LOG_DIR / f"{run_id}.log"
+    db.create_run(run_id, f"batch-rt-{len(entries)}", str(log_file))
+    with _lock:
+        _run_queues[run_id] = queue.Queue()
+    threading.Thread(
+        target=_do_recover_refresh_token_batch, args=(run_id, entries, options, log_file),
+        daemon=True, name=f"recover-rt-batch-{run_id}",
+    ).start()
     return run_id
 
 

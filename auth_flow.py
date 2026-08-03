@@ -1021,6 +1021,7 @@ class AuthFlow:
             "phone_already_verified", "already_verified",
             "disallowed_phone", "invalid_phone_number", "phone_number_invalid",
             "blocked_phone", "phone_number_blocked",
+            "this phone number is already linked to the maximum number of accounts",
             "suspicious behavior from phone",  # OpenAI 风控：号段可疑
         )
         def _is_phone_rejected(s: str) -> bool:
@@ -3305,4 +3306,3 @@ class AuthFlow:
         self.result.email = detected_email or ""
         logger.info("使用已有凭证初始化完成")
         return self.result
-

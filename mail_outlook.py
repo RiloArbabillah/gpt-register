@@ -211,7 +211,7 @@ def fetch_otp_via_graph(
                     logger.debug(f"[outlook-graph] {folder} HTTP {e.code}")
                     continue
             except Exception as e:
-                logger.debug(f"[outlook-graph] {folder} 请求异常: {e}")
+                logger.debug(f"[outlook-graph] {folder} request failed: {e}")
                 continue
 
             for msg in messages:
@@ -323,13 +323,13 @@ def fetch_otp_via_imap(
                     if data.get("refresh_token"):
                         cached_refresh = data["refresh_token"]
                 except FatalOutlookMailError as e:
-                    logger.warning(f"[outlook-imap] XOAUTH2 token 获取失败: {e}，禁用")
+                    logger.warning(f"[outlook-imap] XOAUTH2 token retrieval failed: {e}; disabling")
                     use_xoauth2 = False
                     cached_token = ""
                     if not use_password:
                         raise
                 except Exception as e:
-                    logger.warning(f"[outlook-imap] XOAUTH2 token 获取异常: {e}，禁用")
+                    logger.warning(f"[outlook-imap] XOAUTH2 token retrieval error: {e}; disabling")
                     use_xoauth2 = False
                     cached_token = ""
                     if not use_password:
@@ -376,7 +376,7 @@ def fetch_otp_via_imap(
             if not M:
                 if last_err and _is_fatal_imap_error(last_err):
                     raise FatalOutlookMailError(f"IMAP 登录失败: {last_err}")
-                raise RuntimeError(f"IMAP 连接失败: {last_err}")
+                raise RuntimeError(f"IMAP connection failed: {last_err}")
 
             # ── 探测文件夹（首次） ──
             if found_folders is None:
@@ -412,7 +412,7 @@ def fetch_otp_via_imap(
                         picked.insert(0, "INBOX")
                     found_folders = picked
                 except Exception as e:
-                    logger.warning(f"[outlook-imap] LIST 失败: {e}")
+                    logger.warning(f"[outlook-imap] LIST failed: {e}")
                     found_folders = list(folders_to_scan)
 
             # ── 扫描邮件 ──
@@ -489,7 +489,7 @@ def fetch_otp_via_imap(
                 raise FatalOutlookMailError(
                     f"IMAP 不可用 {email_addr}: {e}"
                 ) from e
-            logger.warning(f"[outlook-imap] 异常 (重试): {e}")
+            logger.warning(f"[outlook-imap] Error (retrying): {e}")
             if M:
                 try:
                     M.logout()
@@ -530,7 +530,7 @@ class OutlookMailProvider:
         self.outlook_exhausted = True
 
     def create_mailbox(self) -> str:
-        logger.info(f"[mail] 使用 outlook 账号: {self.email}")
+        logger.info(f"[mail] Using Outlook account: {self.email}")
         return self.email
 
     def wait_for_otp(
@@ -604,7 +604,7 @@ if __name__ == "__main__":
         _sys.exit(2)
     parts = _sys.argv[1].split("----")
     if len(parts) != 4:
-        print(f"4 段格式错: 拿到 {len(parts)} 段")
+        print(f"Invalid four-field format: received {len(parts)} fields")
         _sys.exit(2)
     e, p, c, r = parts
     prov = OutlookMailProvider(e, p, c, r)

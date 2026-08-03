@@ -246,8 +246,8 @@ class AutoLoopController:
             with self._lock:
                 self._stop_event.set()
                 self._last_message = (
-                    "Proxy Proxyscrape tidak tersedia. Batch dihentikan; "
-                    "periksa koneksi atau aktifkan koneksi langsung sebelum mulai lagi."
+                    "Proxyscrape proxy is unavailable. Batch stopped; "
+                    "check the connection or enable direct connection before retrying."
                 )
             logger.warning(self._last_message)
             self._broadcast("state", self._snapshot())
@@ -257,10 +257,10 @@ class AutoLoopController:
             with self._lock:
                 self._stop_event.set()
                 self._last_message = (
-                    f"🎯 已达目标 {self._target_count} 个，自动停止"
-                    f"（成功 {self._registered_ok} / 失败 {self._registered_fail}）"
+                    f"🎯 Target of {self._target_count} reached; stopping automatically "
+                    f"(success {self._registered_ok} / failed {self._registered_fail})"
                 )
-            logger.info(f"已达目标 {self._target_count} 个成功，触发自动停止")
+            logger.info(f"Target of {self._target_count} successful registrations reached; stopping automatically")
             self._broadcast("state", self._snapshot())
             return
 
@@ -269,8 +269,8 @@ class AutoLoopController:
                 self._pause_event.set()
                 self._state = AutoLoopState.PAUSED
                 self._last_break_reason = (
-                    f"连续 {self._consecutive_network_fails} 次网络/环境错误，"
-                    f"自动暂停（号已自动 release，请检查代理后点恢复）"
+                    f"{self._consecutive_network_fails} consecutive network/environment errors; "
+                    f"paused automatically (accounts released; check the proxy before resuming)"
                 )
                 self._last_message = self._last_break_reason
                 self._consecutive_network_fails = 0
@@ -301,7 +301,7 @@ class AutoLoopController:
                 self._state = AutoLoopState.STOPPED
                 self._worker_status.clear()
                 self._last_message = (
-                    f"已停止（成功 {self._registered_ok} / 失败 {self._registered_fail}）"
+                f"Stopped (success {self._registered_ok} / failed {self._registered_fail})"
                 )
             self._broadcast("state", self._snapshot())
 
@@ -309,12 +309,12 @@ class AutoLoopController:
         """单 worker 循环：claim → 跑 → 等结束 → 继续。"""
         idle_round = 0
         proxy = self._proxy_for_worker(worker_id)
-        logger.info(f"[worker-{worker_id}] 启动 (proxy={proxy or '直连'})")
+        logger.info(f"[worker-{worker_id}] started (proxy={proxy or 'direct'})")
 
         while True:
             # 检查停止
             if self._stop_event.is_set():
-                logger.info(f"[worker-{worker_id}] 已停止")
+                logger.info(f"[worker-{worker_id}] stopped")
                 return
 
             # 检查暂停
@@ -331,7 +331,7 @@ class AutoLoopController:
                     self._registered_ok + len(self._worker_status) >= self._target_count
                 ):
                     logger.info(
-                        f"[worker-{worker_id}] 目标 {self._target_count} 已锁定，退出"
+                        f"[worker-{worker_id}] target {self._target_count} is locked; exiting"
                     )
                     return
 
@@ -350,11 +350,11 @@ class AutoLoopController:
                 idle_round += 1
                 if idle_round == 1:
                     self._set_message(
-                        f"worker-{worker_id} 号池空，等待新号..."
+                        f"worker-{worker_id} mailbox pool is empty; waiting for new mailboxes..."
                     )
                 # 空 10 轮（约 30s）就停掉这个 worker
                 if idle_round >= 10:
-                    logger.info(f"[worker-{worker_id}] 号池空 30s，停止")
+                    logger.info(f"[worker-{worker_id}] mailbox pool empty for 30 seconds; stopping")
                     return
                 # 等 3s 再试
                 for _ in range(30):
@@ -373,7 +373,7 @@ class AutoLoopController:
             try:
                 run_id = registrar.start_registration(account, run_options)
             except Exception as e:
-                logger.exception(f"[worker-{worker_id}] 启动注册失败: {e}")
+                logger.exception(f"[worker-{worker_id}] failed to start registration: {e}")
                 if mail_source == "imap_pool":
                     db.release_imap_account(account["email"])
                 elif mail_source not in ("cf_temp", "imap"):
@@ -437,7 +437,7 @@ class AutoLoopController:
                 if st == "failed":
                     return False, (row["error_category"] or "")
             time.sleep(1)
-        logger.warning(f"run {run_id} 等了 {timeout}s 没结束，超时放弃")
+        logger.warning(f"run {run_id} did not finish within {timeout}s; giving up")
         return False, ""
 
 

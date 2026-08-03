@@ -90,9 +90,9 @@ class CFTempEmailProvider:
         session=None,
     ):
         if not api_url:
-            raise ValueError("api_url 不能为空")
+            raise ValueError("api_url is required")
         if not domain:
-            raise ValueError("domain 不能为空")
+            raise ValueError("domain is required")
         self.api_url = api_url.rstrip("/")
         self.admin_token = admin_token
         self.domain = domain
@@ -146,7 +146,7 @@ class CFTempEmailProvider:
                     )
                 return self._session.post(url, headers=headers, timeout=timeout)
             except Exception as e:
-                logger.warning(f"[cf_temp] curl_cffi 请求异常，回退 urllib: {e}")
+                logger.warning(f"[cf_temp] curl_cffi request failed; falling back to urllib: {e}")
 
         # urllib 兜底
         if params:
@@ -211,7 +211,7 @@ class CFTempEmailProvider:
         token = (data.get("token") or data.get("jwt") or "").strip()
 
         if not email:
-            raise RuntimeError(f"new_address 响应缺 email 字段: {data}")
+            raise RuntimeError(f"new_address response is missing the email field: {data}")
 
         self._jwt = token
         self._current_email = email
@@ -231,7 +231,7 @@ class CFTempEmailProvider:
         )
         status = getattr(resp, "status_code", 0)
         if status != 200:
-            logger.debug(f"[cf_temp] /admin/mails 返回 {status}")
+            logger.debug(f"[cf_temp] /admin/mails returned {status}")
             return []
         data = self._parse_json(resp)
         if isinstance(data, dict):
@@ -254,7 +254,7 @@ class CFTempEmailProvider:
         """
         timeout = max(int(timeout), 60)
         deadline = time.time() + timeout
-        logger.info(f"[cf_temp] 等待 OTP -> {email_addr} (timeout={timeout}s)")
+        logger.info(f"[cf_temp] Waiting for OTP -> {email_addr} (timeout={timeout}s)")
 
         # 起始 seen_ids：当前邮箱里已有的邮件 id（避免被旧邮件污染）
         # issued_after=None 表示从现在开始等
@@ -264,9 +264,9 @@ class CFTempEmailProvider:
                 mid = str(m.get("id", ""))
                 if mid:
                     self._seen_mail_ids.add(mid)
-            logger.debug(f"[cf_temp] 初始已有邮件 {len(self._seen_mail_ids)} 封，跳过")
+            logger.debug(f"[cf_temp] Found {len(self._seen_mail_ids)} existing messages; skipping them")
         except Exception as e:
-            logger.warning(f"[cf_temp] 初始邮件列表拉取异常: {e}")
+            logger.warning(f"[cf_temp] Failed to fetch the initial mail list: {e}")
 
         while time.time() < deadline:
             try:
@@ -292,7 +292,7 @@ class CFTempEmailProvider:
                         f"(subject={mail.get('subject','')[:50]})"
                     )
             except Exception as e:
-                logger.warning(f"[cf_temp] poll 异常 (吃掉重试): {e}")
+                logger.warning(f"[cf_temp] Poll error (retrying): {e}")
             time.sleep(3)
 
         raise TimeoutError(f"CFTempEmail OTP timeout {timeout}s for {email_addr}")
@@ -307,11 +307,11 @@ if __name__ == "__main__":
         sys.exit(2)
     p = CFTempEmailProvider(api_url=sys.argv[1], admin_token=sys.argv[2], domain=sys.argv[3])
     email = p.create_mailbox()
-    print(f"创建邮箱: {email}")
-    print(f"开始等待 OTP（120s）...")
+    print(f"Created mailbox: {email}")
+    print("Waiting for OTP (120s)...")
     try:
         code = p.wait_for_otp(email, timeout=120)
         print(f"OTP: {code}")
     except TimeoutError as e:
-        print(f"超时: {e}")
+        print(f"Timed out: {e}")
         sys.exit(1)

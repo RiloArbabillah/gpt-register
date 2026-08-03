@@ -115,7 +115,7 @@ def _import_cffi():
         from curl_cffi import requests as cffi_requests
         return cffi_requests
     except ImportError as e:
-        raise RuntimeError(f"curl_cffi 未安装，无法导出（pip install curl-cffi）: {e}")
+        raise RuntimeError(f"curl_cffi is not installed; export is unavailable (pip install curl-cffi): {e}")
 
 
 def _import_cffi_mime():
@@ -124,7 +124,7 @@ def _import_cffi_mime():
         from curl_cffi import CurlMime
         return CurlMime
     except ImportError as e:
-        raise RuntimeError(f"curl_cffi CurlMime 不可用: {e}")
+        raise RuntimeError(f"curl_cffi CurlMime is unavailable: {e}")
 
 
 # ──────────────────────── 核心：刷新 Codex access_token ────────────────────────
@@ -141,7 +141,7 @@ def refresh_codex_token(refresh_token: str, *, timeout: int = DEFAULT_TIMEOUT) -
     """
     rt = str(refresh_token or "").strip()
     if not rt:
-        raise RuntimeError("缺少 refresh_token，无法刷新 Codex access_token")
+        raise RuntimeError("refresh_token is missing; cannot refresh the Codex access_token")
 
     cffi = _import_cffi()
     body = {
@@ -180,10 +180,10 @@ def refresh_codex_token(refresh_token: str, *, timeout: int = DEFAULT_TIMEOUT) -
     try:
         data = resp.json()
     except Exception:
-        raise RuntimeError("OpenAI token 刷新返回非 JSON")
+        raise RuntimeError("OpenAI token refresh returned a non-JSON response")
 
     if not isinstance(data, dict) or not data.get("access_token"):
-        raise RuntimeError(f"OpenAI token 刷新返回无 access_token: {str(data)[:200]}")
+        raise RuntimeError(f"OpenAI token refresh returned no access_token: {str(data)[:200]}")
 
     return data
 
@@ -280,7 +280,7 @@ def build_cpa_token_json(cred: dict) -> dict:
     """
     access_token = str(cred.get("access_token") or "").strip()
     if not access_token:
-        raise RuntimeError("未读取到可导入的 access_token")
+        raise RuntimeError("No importable access_token was found")
     refresh_token = str(cred.get("refresh_token") or "").strip()
     id_token = str(cred.get("id_token") or "").strip()
     email = str(cred.get("email") or "").strip()
@@ -323,9 +323,9 @@ def export_to_cpa(cred: dict, cfg: dict, *,
     api_key = (cfg.get("cpa_mgmt_key") or "").strip()
     timeout = int(cfg.get("cpa_timeout") or DEFAULT_TIMEOUT)
     if not api_url:
-        raise RuntimeError("CPA 未配置 URL")
+        raise RuntimeError("CPA URL is not configured")
     if not api_key:
-        raise RuntimeError("CPA 未配置管理密钥")
+        raise RuntimeError("CPA management key is not configured")
 
     cffi = _import_cffi()
     CurlMime = _import_cffi_mime()
@@ -371,13 +371,8 @@ def export_to_cpa(cred: dict, cfg: dict, *,
                 timeout=timeout,
                 impersonate="chrome110",
             )
-            # 详细日志：HTTP 状态 + 响应体
-            try:
-                body_preview = (resp.text or "")[:400]
-            except Exception:
-                body_preview = "(无法读取响应体)"
             log(
-                f"[CPA] 服务器响应: HTTP {resp.status_code}  body={body_preview!r}",
+                f"[CPA] Server response: HTTP {resp.status_code}",
                 "info" if resp.status_code in (200, 201) else "warn",
             )
             if resp.status_code in (200, 201):
@@ -427,7 +422,7 @@ def build_sub2api_payload(cred: dict, group_ids: list[int]) -> dict:
     """
     access_token = str(cred.get("access_token") or "").strip()
     if not access_token:
-        raise RuntimeError("未读取到可导入的 access_token")
+        raise RuntimeError("No importable access_token was found")
     refresh_token = str(cred.get("refresh_token") or "").strip()
     id_token = str(cred.get("id_token") or "").strip()
     email = str(cred.get("email") or "").strip()
@@ -497,9 +492,9 @@ def export_to_sub2api(cred: dict, cfg: dict, *,
     api_url = (cfg.get("sub2api_url") or "").rstrip("/").strip()
     api_key = (cfg.get("sub2api_api_key") or "").strip()
     if not api_url:
-        raise RuntimeError("SUB2API 未配置 URL")
+        raise RuntimeError("SUB2API URL is not configured")
     if not api_key:
-        raise RuntimeError("SUB2API 未配置 API Key")
+        raise RuntimeError("SUB2API API Key is not configured")
 
     group_ids = _parse_group_ids(cfg.get("sub2api_group_ids"))
     timeout = int(cfg.get("sub2api_timeout") or DEFAULT_TIMEOUT)
@@ -583,9 +578,9 @@ def test_cpa(cfg: dict) -> dict:
     api_url = (cfg.get("cpa_url") or "").rstrip("/").strip()
     api_key = (cfg.get("cpa_mgmt_key") or "").strip()
     if not api_url:
-        raise RuntimeError("CPA 未配置 URL")
+        raise RuntimeError("CPA URL is not configured")
     if not api_key:
-        raise RuntimeError("CPA 未配置管理密钥")
+        raise RuntimeError("CPA management key is not configured")
     timeout = int(cfg.get("cpa_timeout") or DEFAULT_TIMEOUT)
     cffi = _import_cffi()
 
@@ -614,7 +609,7 @@ def test_cpa(cfg: dict) -> dict:
     # 405 Method Not Allowed 表示路径对但不允许 GET，至少 URL 通了
     if resp.status_code == 405:
         return {"ok": True, "message": f"CPA URL 可达（HTTP 405），但无法用 GET 验证密钥；请实际上传一次确认"}
-    raise RuntimeError(f"CPA 返回 HTTP {resp.status_code}: {(resp.text or '')[:200]}")
+    raise RuntimeError(f"CPA returned HTTP {resp.status_code}")
 
 
 def test_sub2api(cfg: dict) -> dict:
@@ -622,9 +617,9 @@ def test_sub2api(cfg: dict) -> dict:
     api_url = (cfg.get("sub2api_url") or "").rstrip("/").strip()
     api_key = (cfg.get("sub2api_api_key") or "").strip()
     if not api_url:
-        raise RuntimeError("SUB2API 未配置 URL")
+        raise RuntimeError("SUB2API URL is not configured")
     if not api_key:
-        raise RuntimeError("SUB2API 未配置 API Key")
+        raise RuntimeError("SUB2API API Key is not configured")
     timeout = int(cfg.get("sub2api_timeout") or DEFAULT_TIMEOUT)
     cffi = _import_cffi()
 
@@ -643,8 +638,8 @@ def test_sub2api(cfg: dict) -> dict:
     if resp.status_code in (200, 201):
         return {"ok": True, "message": f"SUB2API 连通正常 (HTTP {resp.status_code})"}
     if resp.status_code in (401, 403):
-        raise RuntimeError(f"SUB2API 鉴权失败 (HTTP {resp.status_code})，请检查 API Key")
-    raise RuntimeError(f"SUB2API 返回 HTTP {resp.status_code}: {(resp.text or '')[:200]}")
+        raise RuntimeError(f"SUB2API authentication failed (HTTP {resp.status_code}); check the API Key")
+    raise RuntimeError(f"SUB2API returned HTTP {resp.status_code}")
 
 
 # ──────────────────────── 统一入口（注册完成后调用） ────────────────────────

@@ -82,10 +82,10 @@ def _ensure_sdk_file(session: Any, timeout_ms: int) -> Path:
         timeout=max(10, int(timeout_ms / 1000)),
     )
     if getattr(resp, "status_code", 0) != 200:
-        raise RuntimeError(f"下载 sdk.js 失败: HTTP {resp.status_code}")
+        raise RuntimeError(f"Failed to download sdk.js: HTTP {resp.status_code}")
     content = getattr(resp, "content", b"") or (resp.text or "").encode()
     if not content:
-        raise RuntimeError("下载 sdk.js 失败: 响应为空")
+        raise RuntimeError("Failed to download sdk.js: empty response")
     sdk_file.write_bytes(content)
     _sdk_file_cache = sdk_file
     return sdk_file
@@ -113,13 +113,13 @@ def _run_quickjs_action(
         },
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"QuickJS 执行失败: {(proc.stderr or proc.stdout or 'unknown').strip()[:300]}")
+        raise RuntimeError(f"QuickJS execution failed: {(proc.stderr or proc.stdout or 'unknown').strip()[:300]}")
     out = (proc.stdout or "").strip()
     if not out:
-        raise RuntimeError("QuickJS 返回空输出")
+        raise RuntimeError("QuickJS returned empty output")
     data = json.loads(out)
     if not isinstance(data, dict):
-        raise RuntimeError("QuickJS 输出不是 JSON 对象")
+        raise RuntimeError("QuickJS output is not a JSON object")
     return data
 
 
@@ -152,7 +152,7 @@ def _fetch_sentinel_challenge(
         raise RuntimeError(f"/sentinel/req HTTP {resp.status_code}")
     payload = resp.json()
     if not isinstance(payload, dict):
-        raise RuntimeError("Sentinel challenge 响应不是 JSON 对象")
+        raise RuntimeError("Sentinel challenge response is not a JSON object")
     return payload
 
 

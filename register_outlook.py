@@ -52,7 +52,7 @@ def main():
 
     parts = sys.argv[1].split("----")
     if len(parts) != 4:
-        print(f"4 段格式错: 拿到 {len(parts)} 段", file=sys.stderr)
+        print(f"Invalid four-field format: received {len(parts)} fields", file=sys.stderr)
         sys.exit(2)
     email, password, client_id, refresh = parts
     logger.info(
@@ -68,7 +68,7 @@ def main():
     )
 
     flow = AuthFlow(cfg)
-    logger.info("[auth_flow] run_register 启动 (纯协议 + outlook IMAP) ...")
+    logger.info("[auth_flow] run_register started (protocol + Outlook IMAP)...")
     partial = False
     try:
         result = flow.run_register(mail)
@@ -78,8 +78,8 @@ def main():
         d = flow.result.to_dict()
         if d.get("access_token") or d.get("refresh_token") or d.get("session_token"):
             partial = True
-            logger.warning(f"[register] 流程异常: {e}")
-            logger.warning("[register] 但已拿到部分凭证，继续保存")
+            logger.warning(f"[register] Flow error: {e}")
+            logger.warning("[register] Partial credentials were obtained; continuing to save")
         else:
             raise
 
@@ -94,7 +94,7 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
     tag = " (部分凭证, 缺 session_token / 可能因为账号需要补手机)" if partial else ""
-    print(f"\n=== DONE{tag} ===\n账号凭证已写入: {out_path}")
+    print(f"\n=== DONE{tag} ===\nAccount credentials written to: {out_path}")
 
 
 if __name__ == "__main__":

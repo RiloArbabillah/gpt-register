@@ -8,9 +8,9 @@ const MAX_LOGS = 2000
 
 function classify(line) {
   const l = (line || '').toLowerCase()
-  if (l.includes('error') || l.includes('失败') || l.includes('拒绝')) return 'err'
+  if (l.includes('error') || l.includes('failed') || l.includes('rejected')) return 'err'
   if (l.includes('warning') || l.includes('warn')) return 'warn'
-  if (l.includes('成功') || l.includes('完成') || l.includes('命中') || l.includes('ok')) return 'ok'
+  if (l.includes('succeeded') || l.includes('completed') || l.includes('matched') || l.includes('ok')) return 'ok'
   return ''
 }
 
@@ -55,10 +55,10 @@ export const useRuntimeStore = defineStore('runtime', () => {
               access_token_len: d.access_token_len,
               partial: d.partial,
             }
-            addLog(`注册完成: access_token=${d.access_token_len}${d.partial ? ' (部分凭证)' : ''}`, 'ok')
+            addLog(`Registration completed: access_token=${d.access_token_len}${d.partial ? ' (partial credentials)' : ''}`, 'ok')
           } else if (d.kind === 'error') {
             lastRunResult.value = { email: d.email, error: d.message }
-            addLog('错误: ' + d.message, 'err')
+            addLog('Error: ' + d.message, 'err')
           } else if (d.kind === 'phase') {
             addLog(`phase=${d.phase} email=${d.email}`, 'evt')
           }
@@ -89,15 +89,15 @@ export const useRuntimeStore = defineStore('runtime', () => {
       run_started: (e) => {
         try {
           const d = JSON.parse(e.data)
-          addLog(`[auto] 开始注册 ${d.email} (run=${d.run_id})`, 'evt')
+          addLog(`[auto] Starting registration ${d.email} (run=${d.run_id})`, 'evt')
           streamRun(d.run_id) // 复用单跑 SSE，接管日志
         } catch (_) {}
       },
       run_finished: (e) => {
         try {
           const d = JSON.parse(e.data)
-          const tag = d.ok ? '[成功]' : (d.category === 'network' ? '[网络错误，号已 release]' : '[失败]')
-          addLog(`[auto] ${tag} ${d.email} 完成`, d.ok ? 'ok' : 'err')
+          const tag = d.ok ? '[Succeeded]' : (d.category === 'network' ? '[Network error; account released]' : '[Failed]')
+          addLog(`[auto] ${tag} ${d.email} completed`, d.ok ? 'ok' : 'err')
           useStatsStore().refresh()
           bumpData()
         } catch (_) {}
@@ -105,7 +105,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
       circuit_break: (e) => {
         try {
           const d = JSON.parse(e.data)
-          addLog(`[auto] 熔断: ${d.reason}`, 'err')
+          addLog(`[auto] Circuit breaker: ${d.reason}`, 'err')
           banner.value = d.reason
         } catch (_) {}
       },

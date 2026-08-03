@@ -174,8 +174,8 @@ def _do_register(
                 logging.getLogger("registrar").info("[proxy] using default Proxyscrape proxy")
             else:
                 raise RuntimeError(
-                    "proxy_unavailable: tidak ada proxy Proxyscrape yang dapat membuat HTTPS CONNECT tunnel. "
-                    "Periksa koneksi atau aktifkan opsi 'Gunakan koneksi langsung' untuk melanjutkan tanpa proxy."
+                    "proxy_unavailable: no Proxyscrape proxy can establish an HTTPS CONNECT tunnel. "
+                    "Check the connection or enable direct connection to continue."
                 )
 
         cfg = Config()
@@ -193,8 +193,8 @@ def _do_register(
             token   = db.get_cf_admin_token()
             if not api_url or not domain or not token:
                 raise RuntimeError(
-                    "CF Temp Email 未配置完整（缺 api_url / domain / admin_token），"
-                    "请去「邮箱配置」Tab 填写"
+                    "CF Temp Email is not fully configured (missing api_url / domain / admin_token). "
+                    "Configure it in Mail Settings."
                 )
             mail = CFTempEmailProvider(
                 api_url=api_url, admin_token=token, domain=domain,
@@ -209,7 +209,8 @@ def _do_register(
             missing = [name for name in ("host", "username", "password", "domain") if not imap[name]]
             if missing:
                 raise RuntimeError(
-                    "IMAP catch-all 未配置完整（缺 " + ", ".join(missing) + "），请去「邮箱配置」填写"
+                    "IMAP catch-all is not fully configured (missing " + ", ".join(missing) + "). "
+                    "Configure it in Mail Settings."
                 )
             mail = ImapCatchAllProvider(
                 host=imap["host"], username=imap["username"], password=imap["password"],
@@ -223,13 +224,13 @@ def _do_register(
 
             missing = [key for key in ("host", "password") if not account.get(key)]
             if missing:
-                raise RuntimeError("IMAP mailbox 配置不完整（缺 " + ", ".join(missing) + "）")
+                raise RuntimeError("IMAP mailbox configuration is incomplete (missing " + ", ".join(missing) + ")")
             mail = ImapCatchAllProvider(
                 host=account["host"], username=account["email"], password=account["password"],
                 domain=account["email"].rsplit("@", 1)[-1], port=int(account.get("port") or 993),
                 mailbox_email=account["email"],
             )
-            logging.getLogger("registrar").info(f"[register] 邮箱来源: imap_pool / email={email}")
+            logging.getLogger("registrar").info(f"[register] mail source: imap_pool / email={email}")
         else:
             mail = OutlookMailProvider(
                 email=account["email"],
@@ -240,7 +241,7 @@ def _do_register(
 
         flow = AuthFlow(cfg, sms_callback=_build_sms_callback(run_id))
         _emit_status(run_id, "phase", {"phase": "starting", "email": email})
-        logging.getLogger("registrar").info(f"[register] 开始: {email}")
+        logging.getLogger("registrar").info(f"[register] started: {email}")
 
         partial = False
         d: dict
@@ -264,12 +265,12 @@ def _do_register(
             )
             if wanted_ok and has_any:
                 logging.getLogger("registrar").warning(
-                    f"[register] 流程末段异常但用户勾选的凭证已齐: {e}"
+                    f"[register] late-stage error but all requested credentials are available: {e}"
                 )
             elif has_any:
                 partial = True
                 logging.getLogger("registrar").warning(
-                    f"[register] 部分凭证 (缺用户勾选的某项): {e}"
+                    f"[register] partial credentials (a requested field is missing): {e}"
                 )
             else:
                 raise
@@ -310,7 +311,7 @@ def _do_register(
         }
         _emit_status(run_id, "done", result_summary)
         logging.getLogger("registrar").info(
-            f"[register] 完成 email={d.get('email')} "
+            f"[register] completed email={d.get('email')} "
             f"at={result_summary['access_token_len']} "
             f"st={result_summary['session_token_len']} "
             f"rt={result_summary['refresh_token_len']}"
@@ -320,7 +321,7 @@ def _do_register(
     except Exception as e:
         err = str(e)
         category = classify_error(err)
-        logging.getLogger("registrar").error(f"[register] 失败 (category={category}): {err}")
+        logging.getLogger("registrar").error(f"[register] failed (category={category}): {err}")
         if category != "account":
             logging.getLogger("registrar").error(traceback.format_exc())
         if mail_source == "imap_pool":
@@ -332,7 +333,7 @@ def _do_register(
             if category == "network":
                 db.release_unused(email)
                 logging.getLogger("registrar").warning(
-                    f"[register] {email} 判定为网络/环境错误，号已 release 回 available"
+                    f"[register] {email} classified as a network/environment error; mailbox released to available"
                 )
             else:
                 db.mark_failed(email, f"[{category}] {err}")
@@ -398,7 +399,7 @@ def _try_export_to_panels(run_id: str, cred: dict) -> None:
             log_fn=_log,
         )
     except Exception as e:
-        _log(f"导出整体异常: {e}", "error")
+        _log(f"Export failed: {e}", "error")
         return
 
     # 汇总成一个事件给前端
@@ -431,7 +432,7 @@ def _build_sms_callback(run_id: str, *, force_reuse_three_times: bool = False) -
         return None
     api_key = (cfg.get("sms_api_key") or "").strip()
     if not api_key:
-        logging.getLogger("registrar").warning("[sms] 已启用接码但未配置 sms_api_key，跳过")
+        logging.getLogger("registrar").warning("[sms] SMS is enabled but sms_api_key is not configured; skipping")
         return None
 
     smslog = logging.getLogger("registrar")
@@ -513,7 +514,7 @@ def _do_recover_refresh_token(
             from proxy_proxyscrape import get_default_proxy
             selected_proxy = get_default_proxy()
             if not selected_proxy:
-                raise RuntimeError("proxy_unavailable: tidak ada proxy tersedia; aktifkan koneksi langsung atau isi proxy.")
+                raise RuntimeError("proxy_unavailable: no proxy is available; enable direct connection or provide a proxy.")
 
         cfg = Config()
         cfg.proxy = selected_proxy or None
@@ -526,18 +527,18 @@ def _do_recover_refresh_token(
                 host=imap["host"], username=imap["username"], password=imap["password"],
                 domain=imap["domain"], port=int(imap["port"] or 993),
             )
-            logging.getLogger("registrar").info("[recover-rt] memakai IMAP catch-all untuk OTP")
+            logging.getLogger("registrar").info("[recover-rt] using IMAP catch-all for OTP")
         elif options.get("mail_source") == "imap_pool":
             from mail_imap import ImapCatchAllProvider
 
             if not account:
-                raise RuntimeError("IMAP mailbox pool account tidak ditemukan")
+                raise RuntimeError("IMAP mailbox pool account was not found")
             mail = ImapCatchAllProvider(
                 host=account["host"], username=account["email"], password=account["password"],
                 domain=account["email"].rsplit("@", 1)[-1], port=int(account.get("port") or 993),
                 mailbox_email=account["email"],
             )
-            logging.getLogger("registrar").info("[recover-rt] memakai IMAP pool mailbox untuk OTP")
+            logging.getLogger("registrar").info("[recover-rt] using IMAP pool mailbox for OTP")
         else:
             mail = OutlookMailProvider(
                 email=email,
@@ -546,7 +547,7 @@ def _do_recover_refresh_token(
                 refresh_token=(account or {}).get("refresh_token", ""),
             )
         _emit_status(run_id, "phase", {"phase": "recovering_refresh_token", "email": email})
-        logging.getLogger("registrar").info("[recover-rt] mulai login ulang: %s", email)
+        logging.getLogger("registrar").info("[recover-rt] starting re-login: %s", email)
         result = AuthFlow(
             cfg,
             sms_callback=_build_sms_callback(run_id, force_reuse_three_times=force_sms_reuse_three_times),
@@ -555,9 +556,9 @@ def _do_recover_refresh_token(
         ).to_dict()
         refresh_token = result.get("refresh_token", "")
         if not refresh_token:
-            raise RuntimeError("login selesai tetapi refresh_token tidak didapat")
+            raise RuntimeError("Login completed but refresh_token was not obtained")
         if not db.update_registered_refresh_token(email, refresh_token, result.get("id_token", "")):
-            raise RuntimeError("refresh_token tidak disimpan: akun sudah memiliki RT atau data tidak ditemukan")
+            raise RuntimeError("refresh_token was not saved: the account already has an RT or the data was not found")
 
         # Reuse the configured CPA/SUB2API auto-export flow after a successful
         # RT recovery. Export errors are logged but do not invalidate the RT.
@@ -570,7 +571,7 @@ def _do_recover_refresh_token(
         if complete_run:
             db.finish_run(run_id, "done")
             _emit_status(run_id, "done", summary)
-        logging.getLogger("registrar").info("[recover-rt] selesai email=%s rt=%s", email, len(refresh_token))
+        logging.getLogger("registrar").info("[recover-rt] completed email=%s rt=%s", email, len(refresh_token))
     except Exception as e:
         error = str(e)
         category = classify_error(error)
@@ -601,7 +602,7 @@ def start_refresh_token_recovery(registered: dict, account: Optional[dict], opti
     email = registered["email"].lower()
     with _lock:
         if email in _refresh_token_recoveries:
-            raise RuntimeError("akun ini sedang dalam proses pengambilan refresh_token")
+            raise RuntimeError("This account is already retrieving its refresh_token")
         _refresh_token_recoveries.add(email)
 
     run_id = uuid.uuid4().hex[:12]
@@ -636,7 +637,7 @@ def _do_recover_refresh_token_batch(run_id: str, entries: list[dict], options: d
                 succeeded += 1
             else:
                 failed += 1
-        db.finish_run(run_id, "done" if not failed else "failed", "" if not failed else f"{failed} akun gagal")
+        db.finish_run(run_id, "done" if not failed else "failed", "" if not failed else f"{failed} accounts failed")
         _emit_status(run_id, "done", {
             "email": f"Batch RT recovery: {succeeded}/{len(entries)}", "access_token_len": 0,
             "session_token_len": 0, "refresh_token_len": succeeded, "partial": bool(failed),
@@ -649,12 +650,12 @@ def _do_recover_refresh_token_batch(run_id: str, entries: list[dict], options: d
 
 def start_refresh_token_recovery_batch(entries: list[dict], options: dict) -> str:
     if not entries:
-        raise RuntimeError("tidak ada akun tanpa refresh_token untuk diproses")
+        raise RuntimeError("No accounts without refresh_token are available to process")
     emails = [entry["registered"]["email"].lower() for entry in entries]
     with _lock:
         busy = [email for email in emails if email in _refresh_token_recoveries]
         if busy:
-            raise RuntimeError(f"akun sedang dalam proses pengambilan refresh_token: {busy[0]}")
+            raise RuntimeError(f"An account is already retrieving refresh_token: {busy[0]}")
         _refresh_token_recoveries.update(emails)
     run_id = uuid.uuid4().hex[:12]
     log_file = LOG_DIR / f"{run_id}.log"

@@ -75,10 +75,10 @@ def get_sentinel_token(
         )
         if qresult:
             return qresult
-        raise RuntimeError("Sentinel QuickJS 失败（无 SO token），中止注册以避免封号")
+        raise RuntimeError("Sentinel QuickJS failed (missing SO token); aborting registration to avoid account bans")
     except ImportError as e:
-        raise RuntimeError(f"Sentinel QuickJS 模块缺失: {e}")
+        raise RuntimeError(f"Sentinel QuickJS module is missing: {e}")
     except RuntimeError:
         raise
     except Exception as e:
-        raise RuntimeError(f"Sentinel QuickJS 异常: {e}")
+        raise RuntimeError(f"Sentinel QuickJS error: {e}")

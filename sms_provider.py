@@ -266,7 +266,7 @@ class SmsBowerProvider(BaseSmsProvider):
         text = self._request({"action": "getBalance"}).text.strip()
         if text.startswith("ACCESS_BALANCE:"):
             return float(text.split(":", 1)[1])
-        raise RuntimeError(f"SmsBower getBalance 失败: {text}")
+        raise RuntimeError(f"SmsBower getBalance failed: {text}")
 
     def get_prices(self, service: Optional[str] = None, country=None) -> dict:
         params = {"action": "getPrices"}
@@ -277,7 +277,7 @@ class SmsBowerProvider(BaseSmsProvider):
         data = self._request(params).json()
         if isinstance(data, dict):
             return data
-        raise RuntimeError("SmsBower getPrices 返回结构异常")
+        raise RuntimeError("SmsBower getPrices returned an unexpected structure")
 
     def get_top_countries(self, service: Optional[str] = None) -> list[dict]:
         """按价格 + 库存排序返回国家列表。"""
@@ -379,7 +379,7 @@ class SmsBowerProvider(BaseSmsProvider):
         try:
             rows = self.get_top_countries(service=service)
         except Exception as exc:
-            logger.warning("SmsBower get_best_country 查询失败: %s", exc)
+            logger.warning("SmsBower get_best_country lookup failed: %s", exc)
             return None
         if not rows:
             return None
@@ -589,7 +589,7 @@ class SmsBowerProvider(BaseSmsProvider):
                             )
                             self.current_activation = activation
                             if len(country_candidates) > 1:
-                                logger.info("SmsBower 在国家 %s 租到号 %s (action=%s)", cid, phone, action)
+                                logger.info("SmsBower rented number %s in country %s (action=%s)", phone, cid, action)
                             return activation
                         except Exception as e:
                             msg = str(e)[:120]
@@ -598,7 +598,7 @@ class SmsBowerProvider(BaseSmsProvider):
                             continue  # 同国家试下个 action
 
                 detail = " | ".join(failures) if failures else "未知"
-                raise RuntimeError(f"SmsBower 依次尝试 {len(country_candidates)} 个候选国家全失败: {detail}") from last_exc
+                raise RuntimeError(f"SmsBower failed for all {len(country_candidates)} candidate countries: {detail}") from last_exc
 
     # ---- 等 code / 状态查询 ----
 
@@ -666,7 +666,7 @@ class SmsBowerProvider(BaseSmsProvider):
                             return {"status": "ok", "code": code,
                                     "sms_key": result.get("sms_key") or ""}
                 except Exception as e:
-                    logger.debug("SmsBower status %s 失败: %s", src, e)
+                    logger.debug("SmsBower status %s failed: %s", src, e)
 
             elapsed = time.time() - start
             # OpenAI 端 resend：固定间隔触发，最多 N 次
@@ -680,7 +680,7 @@ class SmsBowerProvider(BaseSmsProvider):
                         openai_resend_count, openai_resend_max, int(elapsed),
                     )
                 except Exception as e:
-                    logger.warning("OpenAI resend callback 失败: %s", e)
+                    logger.warning("OpenAI resend callback failed: %s", e)
                 # 同步请求 SmsBower 端 resend
                 self.request_resend_sms(activation_id)
                 last_smsbower_resend = time.time()
@@ -789,8 +789,8 @@ class SmsBowerProvider(BaseSmsProvider):
         except Exception:
             pass
         # 简化原因显示：只保留前 80 字符
-        short_reason = (reason or "未知原因")[:80]
-        logger.info("SmsBower 号 activation_id=%s cancel 退款 %s (原因: %s)",
+        short_reason = (reason or "unknown reason")[:80]
+        logger.info("SmsBower activation_id=%s cancelled/refunded=%s (reason: %s)",
                     activation_id, "✅" if cancel_ok else "❌", short_reason)
         # 同时清掉复用缓存（避免下次注册又拿到这个被拒的号）
         with _SMS_CACHE_LOCK:
@@ -821,7 +821,7 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
     pk = (provider_key or "").lower().strip()
     api_key = str(config.get("sms_api_key") or "").strip()
     if not api_key:
-        raise RuntimeError(f"{pk} 未配置 API Key")
+        raise RuntimeError(f"{pk} API key is not configured")
     country = str(config.get("sms_country") or "").strip()
     service = str(config.get("sms_service") or "").strip() or "dr"
     # 接码 API 请求走的代理：复用全局 proxy（registrar 注入注册流程的代理），
@@ -848,7 +848,7 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
                                 proxy=proxy,
                                 reuse_phone_to_max=reuse,
                                 phone_success_max=succ_max)
-    raise RuntimeError(f"未知接码服务: {provider_key}")
+    raise RuntimeError(f"Unknown SMS provider: {provider_key}")
 
 
 class PhoneCallbackController:
@@ -974,16 +974,16 @@ class PhoneCallbackController:
     def get_code(self, timeout: int = 180) -> str:
         """阶段 2：等待 SMS 验证码。"""
         if not self.activation:
-            raise RuntimeError("PhoneCallbackController: 未先 get_phone")
+            raise RuntimeError("PhoneCallbackController: get_phone must be called first")
         provider = self._provider()
-        self.log(f"⏳ 等待 SMS 验证码... (activation_id={self.activation.activation_id} timeout={timeout}s)")
+        self.log(f"⏳ Waiting for SMS code... (activation_id={self.activation.activation_id} timeout={timeout}s)")
         code = provider.get_code(self.activation.activation_id, timeout=timeout)
         if code:
-            self.log(f"✅ 收到 SMS 验证码: {code}")
+            self.log(f"✅ Received SMS code: {code}")
             if getattr(provider, "auto_report_success_on_code", True):
                 self.report_success()
         else:
-            self.log(f"⚠️ 未收到 SMS 验证码: activation_id={self.activation.activation_id}")
+            self.log(f"⚠️ SMS code not received: activation_id={self.activation.activation_id}")
         return code
 
     def report_success(self) -> None:
@@ -991,9 +991,9 @@ class PhoneCallbackController:
             try:
                 self.provider.report_success(self.activation.activation_id)
             except Exception as e:
-                logger.warning("report_success 失败: %s", e)
+                logger.warning("report_success failed: %s", e)
             self.completed = True
-            self.log(f"🎉 已标记号码成功完成: activation_id={self.activation.activation_id}")
+            self.log(f"🎉 Number marked as successfully completed: activation_id={self.activation.activation_id}")
         self._release_lock()
 
     def mark_code_failed(self, reason: str = "") -> None:
@@ -1049,10 +1049,10 @@ class PhoneCallbackController:
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 3:
-        print("用法: python sms_provider.py <provider_key> <api_key> [country]")
+        print("Usage: python sms_provider.py <provider_key> <api_key> [country]")
         sys.exit(1)
     pk = sys.argv[1]
     key = sys.argv[2]
     cc = sys.argv[3] if len(sys.argv) > 3 else ""
     p = create_sms_provider(pk, {"sms_api_key": key, "sms_country": cc})
-    print(f"余额: {p.get_balance()}")
+    print(f"Balance: {p.get_balance()}")

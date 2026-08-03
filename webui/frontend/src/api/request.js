@@ -23,7 +23,7 @@ http.interceptors.response.use(
       error?.response?.data?.detail ||
       error?.response?.statusText ||
       error?.message ||
-      '请求失败'
+      'Request failed'
     const message = localStorage.getItem('gpt_register_locale') === 'en'
       ? translateEnglish(detail)
       : detail
@@ -68,10 +68,10 @@ export async function copyText(text) {
       document.execCommand('copy')
       document.body.removeChild(ta)
     }
-    ElMessage.success('已复制到剪贴板')
+    ElMessage.success('Copied to clipboard')
     return true
   } catch (e) {
-    ElMessage.error('复制失败: ' + e.message)
+    ElMessage.error('Copy failed: ' + e.message)
     return false
   }
 }

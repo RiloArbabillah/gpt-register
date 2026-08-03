@@ -53,9 +53,9 @@ function collectEmails(mode) {
 
 async function doCheck(mode) {
   const emails = collectEmails(mode)
-  if (!emails.length) { ElMessage.info('当前页没有可检测的号'); return }
+  if (!emails.length) { ElMessage.info('There are no accounts to check on this page'); return }
   checking.value = true
-  checkResult.value = `检查中... (${emails.length} 个)`
+  checkResult.value = `Checking... (${emails.length} accounts)`
   try {
     const { results } = await checkPlus(emails, form.value.proxy.trim())
     let plus = 0, free = 0, banned = 0
@@ -66,33 +66,33 @@ async function doCheck(mode) {
       else if (info.status === 'banned') banned++
       else if (info.status === 'free') free++
     }
-    checkResult.value = `完成: ${plus} 可用Plus, ${free} Free, ${banned} 封号`
+    checkResult.value = `Completed: ${plus} Plus eligible, ${free} Free, ${banned} banned`
   } catch (e) {
     checkResult.value = ''
-    ElMessage.error('检查失败: ' + e.message)
+    ElMessage.error('Check failed: ' + e.message)
   } finally { checking.value = false }
 }
 
 async function confirm(msg) {
-  try { await ElMessageBox.confirm(msg, '确认', { type: 'warning', confirmButtonText: '确定', cancelButtonText: '取消' }); return true }
+  try { await ElMessageBox.confirm(msg, 'Confirm', { type: 'warning', confirmButtonText: 'Confirm', cancelButtonText: 'Cancel' }); return true }
   catch (_) { return false }
 }
 async function deleteOne(email) {
-  if (!(await confirm(`删除 ${email} 的凭证？`))) return
-  try { await deleteRegistered(email); ElMessage.success('已删除'); load() }
+  if (!(await confirm(`Delete credentials for ${email}?`))) return
+  try { await deleteRegistered(email); ElMessage.success('Deleted'); load() }
   catch (e) { ElMessage.error(e.message) }
 }
 async function deleteSelected() {
   const emails = selected.value.map((r) => r.email)
   if (!emails.length) return
-  if (!(await confirm(`确定删除选中的 ${emails.length} 条凭证？(不可恢复)`))) return
-  try { const r = await bulkDeleteRegistered({ emails }); ElMessage.success(`已删除 ${r.deleted} 条`); load() }
+  if (!(await confirm(`Delete credentials for the selected ${emails.length} accounts? This cannot be undone.`))) return
+  try { const r = await bulkDeleteRegistered({ emails }); ElMessage.success(`Deleted ${r.deleted} credentials`); load() }
   catch (e) { ElMessage.error(e.message) }
 }
 async function deleteAll() {
-  if (!(await confirm('这会清空注册结果表里的所有凭证！邮箱列表不受影响，确定？'))) return
-  if (!(await confirm('再次确认：真的要删除全部凭证吗？此操作不可恢复！'))) return
-  try { const r = await bulkDeleteRegistered({ all: true }); ElMessage.success(`已清空 ${r.deleted} 条`); load() }
+  if (!(await confirm('This clears all registered credentials; the mailbox pool is not affected. Continue?'))) return
+  if (!(await confirm('Confirm again: delete all credentials? This cannot be undone.'))) return
+  try { const r = await bulkDeleteRegistered({ all: true }); ElMessage.success(`Cleared ${r.deleted} credentials`); load() }
   catch (e) { ElMessage.error(e.message) }
 }
 
@@ -107,7 +107,7 @@ async function recoverRt(row) {
       use_direct_connection: form.value.useDirectConnection,
       otp_timeout: parseInt(form.value.otpTimeout, 10) || 10,
     })
-    ElMessage.info(`Pengambilan RT dimulai untuk ${r.email}`)
+    ElMessage.info(`Refresh token retrieval started for ${r.email}`)
     useRuntimeStore().streamRun(r.run_id)
   } catch (e) { ElMessage.error(e.message) }
   finally { recovering.value = false }
@@ -143,15 +143,15 @@ async function viewCred(email) {
     credData.value = data
     credEmail.value = email
     credVisible.value = true
-  } catch (e) { ElMessage.error('加载凭证失败: ' + e.message) }
+  } catch (e) { ElMessage.error('Failed to load credentials: ' + e.message) }
 }
 async function copyCell(email, field) {
   try {
     const { data } = await getRegistered(email)
     const val = data[field] || ''
-    if (!val) { ElMessage.warning(`${field} 为空`); return }
+    if (!val) { ElMessage.warning(`${field} is empty`); return }
     await copyText(val)
-  } catch (e) { ElMessage.error('加载凭证失败: ' + e.message) }
+  } catch (e) { ElMessage.error('Failed to load credentials: ' + e.message) }
 }
 function copyAllJson() {
   if (credData.value) copyText(JSON.stringify(credData.value, null, 2))
@@ -177,18 +177,18 @@ onActivated(() => load())
           <el-option label="可领Plus" value="plus" />
           <el-option label="已封号" value="banned" />
         </el-select>
-        <el-button :loading="checking" @click="doCheck('unchecked')">检查未检测</el-button>
-        <el-button :loading="checking" @click="doCheck('all')">重新检查</el-button>
+        <el-button :loading="checking" @click="doCheck('unchecked')">Check Unchecked</el-button>
+        <el-button :loading="checking" @click="doCheck('all')">Check Again</el-button>
         <el-button :loading="checking" :disabled="!selected.length" @click="doCheck('selected')">
-          检测选中 ({{ selected.length }})
+          Check Selected ({{ selected.length }})
         </el-button>
         <el-button :loading="recovering" :disabled="recovering || !selected.some((r) => !r.rt_len)" @click="recoverSelectedRt">
           Get RT Selected
         </el-button>
         <el-button type="danger" plain :disabled="!selected.length" @click="deleteSelected">
-          删除选中 ({{ selected.length }})
+          Delete Selected ({{ selected.length }})
         </el-button>
-        <el-button type="danger" plain @click="deleteAll">清空全部</el-button>
+        <el-button type="danger" plain @click="deleteAll">Clear All</el-button>
         <span class="hint">{{ checkResult }}</span>
       </el-space>
 

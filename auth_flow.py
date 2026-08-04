@@ -99,6 +99,7 @@ class AuthFlow:
         self._client_auth_session_id: str = ""
         self._dump_login_verifier: str = ""
         self._codex_rt_attempted: bool = False
+        self._last_network_error = ""
         self._trace_dump_enabled = str(os.getenv("AUTH_TRACE_DUMP", "0")).lower() in ("1", "true", "yes", "on")
         self._trace_include_cookie = str(os.getenv("AUTH_TRACE_INCLUDE_COOKIE", "0")).lower() in (
             "1", "true", "yes", "on"
@@ -465,6 +466,31 @@ class AuthFlow:
         msg = str(exc).lower()
         markers = ["curl: (35)", "tls connect error", "openssl_internal", "sslerror"]
         return any(m in msg for m in markers)
+
+    @staticmethod
+    def _is_transport_error(exc: Exception) -> bool:
+        code = getattr(exc, "code", None)
+        try:
+            if code is not None and int(code) in {5, 6, 7, 18, 28, 35, 47, 52, 55, 56, 57, 58}:
+                return True
+        except (TypeError, ValueError):
+            pass
+        msg = str(exc).lower()
+        return any(marker in msg for marker in (
+            "curl: (5)", "curl: (6)", "curl: (7)", "curl: (28)", "curl: (35)",
+            "curl: (52)", "curl: (55)", "curl: (56)", "connection closed",
+            "connection reset", "connection aborted", "remote disconnected",
+            "failed to perform",
+        ))
+
+    @staticmethod
+    def _network_error_detail(phase: str, exc: Exception, endpoint: str) -> str:
+        code = getattr(exc, "code", None)
+        if code is None:
+            match = re.search(r"curl:\s*\((\d+)\)", str(exc), re.IGNORECASE)
+            code = match.group(1) if match else ""
+        code_text = f" curl_code={code}" if code != "" else ""
+        return f"network_error phase={phase}{code_text} endpoint={endpoint}: {str(exc)[:300]}"
 
     @staticmethod
     def _is_registration_disallowed_error(exc: Exception) -> bool:
@@ -1536,6 +1562,10 @@ class AuthFlow:
             logger.info("chatgpt.com warmup completed")
             return True
         except Exception as e:
+            if self._is_transport_error(e):
+                self._last_network_error = self._network_error_detail(
+                    "warmup", e, "https://chatgpt.com/"
+                )
             logger.warning(f"Cloudflare warmup failed: {e}")
             return False
 
@@ -1575,6 +1605,10 @@ class AuthFlow:
 
             return True
         except Exception as e:
+            if self._is_transport_error(e):
+                self._last_network_error = self._network_error_detail(
+                    "proxy_preflight", e, "https://cloudflare.com/cdn-cgi/trace"
+                )
             logger.error(f"Network check failed: {e}")
         return False
 
@@ -2732,8 +2766,12 @@ class AuthFlow:
         """执行完整注册流程"""
         # 检查网络
         if not self.check_proxy():
+            if self._last_network_error:
+                raise RuntimeError(self._last_network_error)
             logger.warning("Network precheck failed; continuing registration to obtain the precise error...")
-        self.warmup()
+        self._last_network_error = ""
+        if not self.warmup() and self._last_network_error:
+            raise RuntimeError(self._last_network_error)
 
         # 创建邮箱
         email = mail_provider.create_mailbox()
@@ -2957,6 +2995,10 @@ class AuthFlow:
                             pass
                         else:
                             raise
+                    elif self._is_transport_error(e) or "sentinel_so_token_missing" in str(e).lower():
+                        # Preserve the root network/Sentinel failure so the
+                        # registrar can release the mailbox and rotate proxy.
+                        raise
                     else:
                         logger.warning(f"Existing-account about-you creation failed; falling back to reauthorize: {e}")
                         continue_url = ""
@@ -3039,8 +3081,12 @@ class AuthFlow:
             raise RuntimeError("run_protocol_login is missing an email")
 
         if not self.check_proxy():
+            if self._last_network_error:
+                raise RuntimeError(self._last_network_error)
             logger.warning("Network precheck failed; continuing login to obtain the precise error...")
-        self.warmup()
+        self._last_network_error = ""
+        if not self.warmup() and self._last_network_error:
+            raise RuntimeError(self._last_network_error)
 
         # run_protocol_login 的语义即"登录已有账号"（docstring 明写）。kickoff_otp_delivery
         # 依据 _is_existing_account 选 resend vs send_passwordless_otp 分支；落到 send

@@ -50,7 +50,7 @@ def get_sentinel_token(
 ) -> tuple[str, str]:
     """返回 (sentinel_token, so_token) 元组。失败抛 RuntimeError。"""
     try:
-        from sentinel_quickjs import get_sentinel_token_via_quickjs
+        from sentinel_quickjs import get_sentinel_token_via_quickjs, sentinel_last_failure
         try:
             timeout_ms = max(10000, min(120000, int(os.getenv("OPENAI_SENTINEL_TIMEOUT_MS", "45000"))))
         except ValueError:
@@ -81,7 +81,12 @@ def get_sentinel_token(
         )
         if qresult:
             return qresult
-        raise RuntimeError("sentinel_so_token_missing: QuickJS could not obtain the SO token after retries; registration aborted to avoid account bans")
+        detail = sentinel_last_failure()
+        suffix = f" ({detail})" if detail else ""
+        raise RuntimeError(
+            "sentinel_so_token_missing: QuickJS could not obtain the SO token after retries; "
+            f"registration aborted to avoid account bans{suffix}"
+        )
     except ImportError as e:
         raise RuntimeError(f"Sentinel QuickJS module is missing: {e}")
     except RuntimeError:

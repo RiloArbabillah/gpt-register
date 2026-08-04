@@ -81,6 +81,12 @@ Open `http://127.0.0.1:8765/` and sign in with those credentials. The bind-mount
 
 For EasyPanel deployments, the final container image includes Node.js for the QuickJS Sentinel worker. The Sentinel SDK cache is stored in `/data/sentinel` and survives container restarts. Administrators can inspect the non-secret runtime state at `/api/admin/sentinel/status`.
 
+If logs contain `curl (56) Connection closed abruptly`, the outbound proxy closed
+the HTTPS connection. The current run is stopped, its mailbox is released, and a
+proxy-pool worker moves to the next proxy; direct connection is never selected
+automatically. The Sentinel log includes the failing phase and curl code, and the
+admin status endpoint exposes the latest non-secret failure detail.
+
 ### 5sim SMS Behavior
 
 5sim uses one active order for up to three successful accounts or 20 minutes. The application keeps the original `order_id` and polls that order for a new SMS code; it does not call the 5sim `/user/reuse` endpoint. Previously received codes are ignored. If the order expires, reaches the success limit, or is canceled, the next registration rents a new number.

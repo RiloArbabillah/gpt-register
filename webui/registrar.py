@@ -86,6 +86,8 @@ _NETWORK_ERROR_PATTERNS = [
     "/sentinel/req", "sentinel /req", "sentinel quickjs",
     "check_proxy 失败", "网络预检查",
     "curl: (35)", "curl: (28)", "curl: (6)", "curl: (7)",
+    "curl: (52)", "curl: (55)", "curl: (56)", "curl: (57)", "curl: (58)",
+    "network_error phase=",
     "remote disconnected", "connection reset", "connection aborted",
     "max retries exceeded",
     "invalid_state",

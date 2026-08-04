@@ -72,6 +72,7 @@ class AutoLoopController:
         self._subscribers: list[queue.Queue] = []
         # 代理池 / 并发数
         self._proxy_pool: list[str] = []
+        self._proxy_offsets: dict[int, int] = {}
         self._concurrency: int = 1
         # 目标成功数：0 = 不限量（保持旧行为）；>0 时累计成功达标即自动停止
         self._target_count: int = 0
@@ -97,6 +98,7 @@ class AutoLoopController:
             self._concurrency = max(1, min(20, int(self._options.get("concurrency") or 1)))
             pool_text = self._options.get("proxy_pool") or ""
             self._proxy_pool = _parse_proxy_pool(pool_text)
+            self._proxy_offsets.clear()
             # 目标成功数（0=不限量）
             self._target_count = max(0, int(self._options.get("target_count") or 0))
             # 启 manage 线程
@@ -213,8 +215,16 @@ class AutoLoopController:
         if self._options.get("use_direct_connection"):
             return ""
         if self._proxy_pool:
-            return self._proxy_pool[worker_id % len(self._proxy_pool)]
+            offset = self._proxy_offsets.get(worker_id, 0)
+            return self._proxy_pool[(worker_id + offset) % len(self._proxy_pool)]
         return self._options.get("proxy", "") or ""
+
+    def _rotate_proxy_for_worker(self, worker_id: int) -> str:
+        """Move a worker to the next configured proxy after a network failure."""
+        if not self._proxy_pool:
+            return self._proxy_for_worker(worker_id)
+        self._proxy_offsets[worker_id] = self._proxy_offsets.get(worker_id, 0) + 1
+        return self._proxy_for_worker(worker_id)
 
     def _record_finish(self, ok: bool, category: str):
         """worker 结束一个 run 后调，更新计数 + 熔断。"""
@@ -402,6 +412,18 @@ class AutoLoopController:
             with self._lock:
                 self._worker_status.pop(worker_id, None)
             self._record_finish(ok, category)
+            if (not ok) and category in {"network", "sentinel_so_token_missing"}:
+                previous_proxy = proxy
+                proxy = self._rotate_proxy_for_worker(worker_id)
+                if proxy != previous_proxy:
+                    logger.warning(
+                        f"[worker-{worker_id}] network failure; rotating proxy "
+                        f"from {previous_proxy or 'automatic'} to {proxy or 'automatic'}"
+                    )
+                elif previous_proxy:
+                    logger.warning(
+                        f"[worker-{worker_id}] network failure; no alternate proxy is configured"
+                    )
             self._broadcast("state", self._snapshot())
             self._broadcast("run_finished", {
                 "worker_id": worker_id,

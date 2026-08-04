@@ -11,7 +11,7 @@ No payment integration, daemon, Camoufox, or Playwright is included.
 - Browser-free protocol workflow with Sentinel token support.
 - WebUI for account pools, registration runs, logs, and credential exports.
 - Outlook, Cloudflare temporary-email, and IMAP catch-all mail providers.
-- SMS providers: SmsBower, HeroSMS, and SMS-Activate-compatible APIs.
+- SMS providers: SmsBower, HeroSMS, 5sim, and SMS-Activate-compatible APIs.
 - Concurrent workers (1–20) with round-robin proxy pools.
 - Automatic database migrations; existing `webui.db` is preserved during upgrades.
 - Optional OAuth token exchange for `refresh_token` retrieval.
@@ -22,6 +22,8 @@ No payment integration, daemon, Camoufox, or Playwright is included.
 git clone https://github.com/RiloArbabillah/gpt-register.git
 cd gpt-register
 pip install -r requirements.txt
+export ADMIN_USERNAME=admin
+export ADMIN_PASSWORD='replace-with-a-password-of-at-least-8-characters'
 python3 start_webui.py
 ```
 
@@ -30,6 +32,8 @@ Open `http://127.0.0.1:8765/`. To expose the service on your network:
 ```bash
 python3 start_webui.py --host 0.0.0.0 --port 8765
 ```
+
+The first startup creates the admin account from `ADMIN_USERNAME` and `ADMIN_PASSWORD`. The WebUI supports two roles: administrators can manage users and system settings; regular users can use the registration workflow. Passwords are stored as Argon2 hashes, not plaintext. Keep both variables set when initializing a new database.
 
 ### Running on a Linux Server
 
@@ -74,6 +78,10 @@ docker compose up -d --build
 ```
 
 Open `http://127.0.0.1:8765/` and sign in with those credentials. The bind-mounted `./data` directory persists across container rebuilds. When serving the WebUI through HTTPS, set `AUTH_COOKIE_SECURE=1` in the environment; keep it `0` only for plain HTTP local access.
+
+### 5sim SMS Behavior
+
+5sim uses one active order for up to three successful accounts or 20 minutes. The application keeps the original `order_id` and polls that order for a new SMS code; it does not call the 5sim `/user/reuse` endpoint. Previously received codes are ignored. If the order expires, reaches the success limit, or is canceled, the next registration rents a new number.
 
 ## Proxy Behavior and Country Allowlist
 

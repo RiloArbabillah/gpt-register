@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -182,7 +183,7 @@ def _safe_bool(value, default: bool) -> bool:
 
 def _project_cache_dir() -> Path:
     root = Path(__file__).resolve().parent
-    cache = root / "data"
+    cache = Path(os.getenv("WEBUI_DATA_DIR", str(root / "data"))).resolve()
     cache.mkdir(parents=True, exist_ok=True)
     return cache
 
@@ -1069,7 +1070,6 @@ class FiveSimProvider(BaseSmsProvider):
 
     def report_success(self, activation_id: str) -> bool:
         should_finish = False
-        reuse_context: Optional[tuple[str, str, str]] = None
         with _SMS_CACHE_LOCK:
             cache = _FIVESIM_CACHE
             if cache and str(cache.get("activation_id")) == str(activation_id):
@@ -1084,49 +1084,15 @@ class FiveSimProvider(BaseSmsProvider):
                     cache["reuse_stopped"] = True
                     self._save_cache(None)
                 else:
-                    reuse_context = (
-                        str(cache.get("service") or self.default_service),
-                        str(cache.get("phone_number") or ""),
-                        str(cache.get("activation_id") or activation_id),
-                    )
+                    # 5sim keeps the same order open for subsequent SMS codes.
+                    # Persist the increment so a process restart cannot exceed
+                    # the configured per-order success limit.
+                    self._save_cache(cache)
         if should_finish:
             return self._finish_order(activation_id)
-        if not reuse_context:
-            return True
-
-        product, phone, old_activation_id = reuse_context
-        try:
-            data = self.reuse_number(product, phone)
-            new_activation_id = str(data.get("id") or "")
-            new_phone = self._phone(data.get("phone") or phone)
-            with _SMS_CACHE_LOCK:
-                cache = _FIVESIM_CACHE
-                if cache and str(cache.get("activation_id")) == old_activation_id:
-                    cache["activation_id"] = new_activation_id
-                    cache["phone_number"] = new_phone
-                    cache["api_expires"] = data.get("expires")
-                    if data.get("price") is not None:
-                        cache["price"] = data.get("price")
-                    self._save_cache(cache)
-            logger.info(
-                "5sim reused number phone=%s product=%s old_order_id=%s new_order_id=%s use_count=%s/%s",
-                new_phone, product, old_activation_id, new_activation_id,
-                cache.get("use_count") if cache else "unknown", self.phone_success_max or "unlimited",
-            )
-            return True
-        except Exception as exc:
-            logger.warning(
-                "5sim reuse unavailable phone=%s product=%s order_id=%s error=%s; next account will rent a new number",
-                phone, product, old_activation_id, str(exc)[:160],
-            )
-            with _SMS_CACHE_LOCK:
-                cache = _FIVESIM_CACHE
-                if cache and str(cache.get("activation_id")) == old_activation_id:
-                    cache["reuse_stopped"] = True
-                    cache["stop_reason"] = str(exc)[:200]
-                    self._save_cache(None)
-            self._finish_order(old_activation_id)
-            return False
+        # Unlike SmsBower, 5sim does not require a new reuse request here.
+        # The next account reuses this order_id and get_code() filters out
+        # codes already consumed by previous accounts.
         return True
 
     def mark_code_failed(self, activation_id: str, reason: str = "") -> None:

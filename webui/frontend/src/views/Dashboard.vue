@@ -1,14 +1,18 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { useStatsStore } from '@/stores/stats'
 import { useRuntimeStore } from '@/stores/runtime'
+import { getSmsBalance } from '@/api/settings'
 import StatusDot from '@/components/StatusDot.vue'
 
 const router = useRouter()
 const { stats } = storeToRefs(useStatsStore())
 const { autoStatus } = storeToRefs(useRuntimeStore())
+const smsBalance = ref(null)
+const smsBalanceLoading = ref(false)
+let smsBalanceTimer = null
 
 const cards = computed(() => [
   { label: '总计', value: stats.value.total, color: 'var(--brand)', icon: 'Files' },
@@ -24,6 +28,33 @@ const autoStateLabel = computed(() => ({
 const autoStateType = computed(() => ({
   stopped: 'info', running: 'success', paused: 'warning',
 }[autoStatus.value.state] || 'info'))
+
+const smsBalanceDisplay = computed(() => {
+  const value = smsBalance.value?.balance
+  if (value === null || value === undefined) return smsBalance.value?.configured === false ? 'Not configured' : 'Unavailable'
+  return Number(value).toLocaleString(undefined, { maximumFractionDigits: 8 })
+})
+
+async function refreshSmsBalance() {
+  smsBalanceLoading.value = true
+  try {
+    smsBalance.value = await getSmsBalance()
+  } catch (error) {
+    smsBalance.value = { ok: false, configured: true, balance: null, error: error?.message || 'Request failed' }
+  } finally {
+    smsBalanceLoading.value = false
+  }
+}
+
+onMounted(() => {
+  refreshSmsBalance()
+  smsBalanceTimer = setInterval(refreshSmsBalance, 60_000)
+})
+
+onBeforeUnmount(() => {
+  if (smsBalanceTimer) clearInterval(smsBalanceTimer)
+  smsBalanceTimer = null
+})
 </script>
 
 <template>
@@ -37,6 +68,23 @@ const autoStateType = computed(() => ({
               <div class="stat-label">{{ c.label }}</div>
             </div>
             <el-icon :size="30" :style="{ color: c.color, opacity: 0.5 }"><component :is="c.icon" /></el-icon>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="16">
+      <el-col :xs="24" :sm="12" :md="8" style="margin-bottom: 16px">
+        <el-card class="stat-card" shadow="hover">
+          <div style="display: flex; align-items: center; justify-content: space-between">
+            <div>
+              <div class="stat-value" style="color: #7b1fa2">{{ smsBalanceDisplay }}</div>
+              <div class="stat-label">SMS Balance{{ smsBalance?.provider ? ` · ${smsBalance.provider}` : '' }}</div>
+              <div v-if="smsBalance?.checked_at" class="hint">{{ new Date(smsBalance.checked_at).toLocaleTimeString() }}</div>
+            </div>
+            <el-button text circle :loading="smsBalanceLoading" title="Refresh SMS balance" @click="refreshSmsBalance">
+              <el-icon><Refresh /></el-icon>
+            </el-button>
           </div>
         </el-card>
       </el-col>

@@ -12,6 +12,7 @@ import json
 import logging
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -183,6 +184,47 @@ def api_release_stale(stale_seconds: int = 1800):
 @app.get("/api/stats")
 def api_stats():
     return {"ok": True, "stats": db.stats()}
+
+
+@app.get("/api/dashboard/sms_balance")
+def api_dashboard_sms_balance():
+    """Return the live balance for the configured SMS provider."""
+    cfg = db.get_sms_internal_config()
+    provider_key = str(cfg.get("sms_provider") or "smsbower")
+    checked_at = datetime.now(timezone.utc).isoformat()
+    if not cfg.get("sms_api_key"):
+        return {
+            "ok": True,
+            "configured": False,
+            "provider": provider_key,
+            "balance": None,
+            "checked_at": checked_at,
+        }
+
+    try:
+        from sms_provider import create_sms_provider
+        provider = create_sms_provider(provider_key, cfg)
+        balance = provider.get_balance()
+        return {
+            "ok": True,
+            "configured": True,
+            "provider": provider_key,
+            "balance": balance,
+            "currency": None,
+            "checked_at": checked_at,
+        }
+    except Exception as exc:
+        logging.getLogger("webui").warning(
+            "SMS balance check failed provider=%s error=%s", provider_key, str(exc)[:200]
+        )
+        return {
+            "ok": False,
+            "configured": True,
+            "provider": provider_key,
+            "balance": None,
+            "checked_at": checked_at,
+            "error": str(exc)[:200],
+        }
 
 
 # ──────────────────────── 代理连通性测试 ────────────────────────

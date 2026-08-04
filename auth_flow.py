@@ -1780,6 +1780,20 @@ class AuthFlow:
         logger.debug("Sentinel Token retrieved successfully")
         return token
 
+    def _block_proxy_on_429(self, resp) -> None:
+        """Temporarily block the active proxy after an HTTP 429 rate limit."""
+        try:
+            if not self.config.proxy:
+                return
+            from proxy_proxyscrape import mark_proxy_rate_limited
+            retry_after = (resp.headers.get("Retry-After", "") or "").strip()
+            block_seconds = None
+            if retry_after.isdigit():
+                block_seconds = max(60, min(3600, int(retry_after)))
+            mark_proxy_rate_limited(self.config.proxy, block_seconds=block_seconds)
+        except Exception:
+            pass
+
     # ── Step 6: 提交注册邮箱 ──
     def authorize_continue(
         self,
@@ -1808,6 +1822,8 @@ class AuthFlow:
         )
         self._trace_http(trace_step or f"authorize_continue_{screen_hint}", resp)
         if resp.status_code != 200:
+            if resp.status_code == 429:
+                self._block_proxy_on_429(resp)
             body = (resp.text or "")[:360]
             # 额外打日志：headers/req_id 帮排查是不是 IP 风控
             req_id = (resp.headers.get("x-request-id", "") or "")[:80]

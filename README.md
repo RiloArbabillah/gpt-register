@@ -151,6 +151,7 @@ node --version
 | `PROXY_REUSE_COOLDOWN_SECONDS` | `600` | Minimum seconds before a Proxyscrape proxy may be picked again; recently used IPs are skipped. |
 | `PROXY_MAX_USES_PER_WINDOW` | `2` | Maximum registrations per Proxyscrape proxy IP inside the rate-limit window. |
 | `PROXY_RATE_LIMIT_WINDOW_SECONDS` | `1800` | Sliding window (seconds) for the per-IP registration rate limit. |
+| `PROXY_BLOCK_SECONDS` | `1800` | How long a proxy that returned HTTP 429 is skipped before it can be picked again. |
 | `OTP_TIMEOUT` | `60` | OTP wait time in seconds; effective minimum is 30. |
 | `WEBUI_ALLOW_LOGIN` | `0` | Set to `1` to use OTP login when an email is already registered. |
 | `SKIP_OAUTH_TOKEN_EXCHANGE` | `0` | Set to `1` to skip OAuth refresh-token exchange. |

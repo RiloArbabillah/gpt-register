@@ -412,9 +412,10 @@ class AutoLoopController:
             with self._lock:
                 self._worker_status.pop(worker_id, None)
             self._record_finish(ok, category)
-            # Rotate on risk-control rejections (e.g. HTTP 409 -> "unknown") too,
-            # not only on transport failures, so a flagged IP is not reused.
-            if (not ok) and category in {"network", "sentinel_so_token_missing", "unknown"}:
+            # Rotate on risk-control rejections (e.g. HTTP 409 -> "unknown",
+            # HTTP 429 -> "rate_limit") too, not only on transport failures, so
+            # a flagged IP is not reused.
+            if (not ok) and category in {"network", "sentinel_so_token_missing", "unknown", "rate_limit"}:
                 previous_proxy = proxy
                 proxy = self._rotate_proxy_for_worker(worker_id)
                 if proxy != previous_proxy:

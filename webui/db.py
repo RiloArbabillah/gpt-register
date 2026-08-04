@@ -659,6 +659,45 @@ def update_registered_refresh_token(email: str, refresh_token: str, id_token: st
         return rc.rowcount == 1
 
 
+def mark_registered_rate_limited(email: str, rate_limited_at: Optional[float] = None) -> None:
+    """Tandai akun kena rate limit (HTTP 429) di extra_json.rate_limited_at."""
+    email = (email or "").strip().lower()
+    con = _conn()
+    cur = con.execute("SELECT extra_json FROM registered WHERE email=?", (email,))
+    row = cur.fetchone()
+    if not row:
+        return
+    extra = {}
+    if row["extra_json"]:
+        try:
+            extra = json.loads(row["extra_json"])
+        except Exception:
+            extra = {}
+    extra["rate_limited_at"] = rate_limited_at if rate_limited_at is not None else time.time()
+    with _lock:
+        con.execute(
+            "UPDATE registered SET extra_json=? WHERE email=?",
+            (json.dumps(extra, ensure_ascii=False), email),
+        )
+        con.commit()
+
+
+def is_registered_rate_limited(email: str, window_seconds: int = 3600) -> bool:
+    """True kalau akun masih dalam cooldown rate limit (dalam window_seconds)."""
+    email = (email or "").strip().lower()
+    con = _conn()
+    cur = con.execute("SELECT extra_json FROM registered WHERE email=?", (email,))
+    row = cur.fetchone()
+    if not row or not row["extra_json"]:
+        return False
+    try:
+        extra = json.loads(row["extra_json"])
+        marked_at = extra.get("rate_limited_at") or 0
+    except Exception:
+        return False
+    return bool(marked_at) and (time.time() - marked_at) < window_seconds
+
+
 def _registered_where(filt: str) -> str:
     if filt == "has_rt":
         return "WHERE length(refresh_token) > 0"
@@ -695,13 +734,16 @@ def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all") ->
     for r in cur.fetchall():
         d = dict(r)
         plus = None
+        rate_limited_at = None
         if d.get("extra_json"):
             try:
                 extra = json.loads(d["extra_json"])
                 plus = extra.get("plus_check")
+                rate_limited_at = extra.get("rate_limited_at")
             except Exception:
                 pass
         d["plus_check"] = plus
+        d["rate_limited_at"] = rate_limited_at
         d.pop("extra_json", None)
         rows.append(d)
     return rows

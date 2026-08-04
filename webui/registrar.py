@@ -101,6 +101,8 @@ def classify_error(err: str) -> str:
         return "proxy_unavailable"
     if "sentinel_so_token_missing" in s:
         return "sentinel_so_token_missing"
+    if any(p in s for p in ("429", "too many requests", "rate limit", "skipped_rate_limited")):
+        return "rate_limit"
     # 先匹配 account 特征（更具体），避免子串误命中（如 "outlook OTP timeout" 含 "timeout"）
     if any(p in s for p in (
         "wrong_email_otp_code", "invalid_grant", "imap xoauth2",
@@ -499,6 +501,10 @@ def _do_recover_refresh_token(
     email = registered["email"]
     saved_env = {}
     try:
+        if db.is_registered_rate_limited(email):
+            raise RuntimeError(
+                "skipped_rate_limited: account is in rate-limit cooldown; skip and retry later"
+            )
         env_overrides = {
             "WEBUI_ALLOW_LOGIN": "1",
             "OTP_TIMEOUT": str(int(options.get("otp_timeout") or 180)),
@@ -580,6 +586,8 @@ def _do_recover_refresh_token(
     except Exception as e:
         error = str(e)
         category = classify_error(error)
+        if category == "rate_limit":
+            db.mark_registered_rate_limited(email)
         if complete_run:
             db.finish_run(run_id, "failed", error, category=category)
             _emit_status(run_id, "error", {"message": error, "category": category})

@@ -15,6 +15,7 @@ class ProxyRotationTest(unittest.TestCase):
         pp._PROXY_REUSE_COOLDOWN_SECONDS = 600
         pp._PROXY_MAX_USES_PER_WINDOW = 2
         pp._PROXY_RATE_LIMIT_WINDOW_SECONDS = 1800
+        pp._blocked_until = {}
 
     def test_rotates_through_pool(self):
         picked = {pp._pick_proxy_locked(1000.0) for _ in range(6)}
@@ -67,6 +68,28 @@ class ProxyRotationTest(unittest.TestCase):
         pp._next_index = 0
         # "a" has the oldest last use (500) and is the least-recently used.
         self.assertEqual(pp._pick_proxy_locked(1000.0), "a")
+
+    def test_marked_rate_limited_proxy_is_skipped(self):
+        pp._blocked_until = {"a": 1600.0}
+        pp._next_index = 0
+        first = pp._pick_proxy_locked(1000.0)
+        self.assertNotEqual(first, "a")
+        self.assertIn(first, {"b", "c"})
+
+    def test_all_blocked_returns_empty(self):
+        pp._blocked_until = {p: 1600.0 for p in ("a", "b", "c")}
+        self.assertEqual(pp._pick_proxy_locked(1000.0), "")
+
+    def test_block_expires_and_proxy_is_reusable(self):
+        pp._blocked_until = {"a": 900.0}
+        pp._next_index = 0
+        self.assertEqual(pp._pick_proxy_locked(1000.0), "a")
+
+    def test_mark_proxy_rate_limited_records_block(self):
+        with self.assertLogs("proxy_proxyscrape", level="WARNING"):
+            pp.mark_proxy_rate_limited("b", block_seconds=600)
+        self.assertIn("b", pp._blocked_until)
+        self.assertGreater(pp._blocked_until["b"], 0)
 
     def test_empty_pool_returns_empty(self):
         pp._proxies = []

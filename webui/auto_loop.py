@@ -18,6 +18,7 @@ import time
 from typing import Optional
 
 from . import db, registrar
+from mail_providers import MailProviderError, get_provider_class
 
 logger = logging.getLogger("auto_loop")
 
@@ -345,17 +346,34 @@ class AutoLoopController:
                     )
                     return
 
-            # Catch-all 模式用虚拟占位，无需 Outlook 号池。
+            # claim 下一个号。要不要走号池由 provider 的 pooled 决定，
+            # 非池化的（CF 这类自己造地址的）用虚拟占位。
             mail_source = db.get_setting("mail_source", "outlook")
-            if mail_source in ("cf_temp", "imap"):
-                account = {
-                    "email": f"{mail_source}_placeholder_{int(time.time())}_{worker_id}@local",
-                    "password": "", "client_id": "", "refresh_token": "",
-                }
-            elif mail_source == "imap_pool":
+            if mail_source == "imap_pool":
                 account = db.claim_imap_account()
+            elif mail_source == "imap":
+                # IMAP catch-all: non-pooled, address dibuat provider saat register.
+                account = {
+                    "email": f"{mail_source}_placeholder_{int(time.time())}_{worker_id}@placeholder.local",
+                    "password": "", "client_id": "", "refresh_token": "",
+                    "relay_url": "", "kind": mail_source,
+                }
             else:
-                account = db.claim_next()
+                try:
+                    pooled = get_provider_class(mail_source).pooled
+                except MailProviderError as e:
+                    logger.error(f"[worker-{worker_id}] {e}，停止")
+                    self._set_message(str(e))
+                    return
+                if pooled:
+                    account = db.claim_next(kind=mail_source)
+                else:
+                    account = {
+                        "email": f"{mail_source}_placeholder_"
+                                 f"{int(time.time())}_{worker_id}@placeholder.local",
+                        "password": "", "client_id": "", "refresh_token": "",
+                        "relay_url": "", "kind": mail_source,
+                    }
             if not account:
                 idle_round += 1
                 if idle_round == 1:

@@ -1,6 +1,11 @@
 import http from './request'
 
 // ──────────────── 邮箱来源配置 ────────────────
+// 已注册的 provider 清单（含能力声明和配置项声明）。
+// 页面据此动态渲染，后端加一种邮箱，这里和页面都不用改。
+export const getMailProviders = (pooledOnly = false) =>
+  http.get('/api/mail/providers', { params: { pooled_only: pooledOnly } })
+
 export const getMailConfig = () => http.get('/api/settings/mail')
 export const saveMailConfig = (payload) => http.post('/api/settings/mail', payload)
 export const testMail = () => http.post('/api/settings/mail/test')

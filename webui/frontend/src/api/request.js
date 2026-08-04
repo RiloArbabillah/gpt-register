@@ -28,19 +28,29 @@ http.interceptors.request.use((config) => {
   return config
 })
 
-// 统一解包 + 错误提示。后端约定：非 2xx 时 body 里有 detail 字段。
+// 统一解包 + 错误提示。后端约定：
+//   - 一般错误：非 2xx，body 里有 detail 字段
+//   - 校验类错误（如导入逐行报错）：422，body 是 { message, errors: [{line, error}] }
+//
+// 抛出的 Error 会挂上 .status 和 .data，调用方需要逐行详情时读 err.data.errors，
+// 只想弹个提示的话照旧读 err.message —— 老代码不用改。
 http.interceptors.response.use(
   (resp) => resp.data,
   (error) => {
+    const data = error?.response?.data
     const detail =
-      error?.response?.data?.detail ||
+      data?.detail ||
+      data?.message ||
       error?.response?.statusText ||
       error?.message ||
       'Request failed'
     const message = localStorage.getItem('gpt_register_locale') === 'en'
       ? translateEnglish(detail)
       : detail
-    return Promise.reject(new Error(message))
+    const err = new Error(message)
+    err.status = error?.response?.status
+    err.data = data
+    return Promise.reject(err)
   },
 )
 

@@ -27,6 +27,14 @@ sys.path.insert(0, str(ROOT))
 
 from . import db, registrar  # noqa: E402
 from .auto_loop import CONTROLLER as AUTO_LOOP  # noqa: E402
+from mail_providers import (  # noqa: E402
+    ImportValidationError,
+    MailProviderError,
+    create_mail_provider,
+    get_provider_class,
+    list_pooled_providers,
+    list_providers,
+)
 
 # 启动时自动释放卡死的 in_use 号（上次进程崩溃 / 强退留下的）
 try:
@@ -82,7 +90,12 @@ async def authentication_middleware(request: Request, call_next):
 
 
 class ImportReq(BaseModel):
-    text: str = Field(..., description="多行 4 段格式 (email----password----client_id----refresh_token)")
+    text: str = Field(..., description="每行一个号，格式由 kind 决定")
+    kind: str = Field(
+        "",
+        description="邮箱来源（outlook / ...）。留空则按段数猜，"
+                    "但 Outlook 和 Gmail 都是 4 段，猜不出来，建议前端必填",
+    )
 
 
 class RegisterReq(BaseModel):
@@ -192,15 +205,34 @@ def api_delete_user(user_id: int):
 
 @app.post("/api/import")
 def api_import(req: ImportReq):
-    result = db.import_accounts(req.text)
+    """批量导入号池。**有一行不合法就整批拒绝**，一个都不写库。
+
+    非法时返回 422，body 里带每一行的行号和原因，前端直接展示即可：
+
+        {"ok": false, "message": "...", "errors": [{"line": 3, "error": "..."}]}
+    """
+    try:
+        result = db.import_accounts(req.text, kind=req.kind)
+    except ImportValidationError as e:
+        return JSONResponse(
+            status_code=422,
+            content={"ok": False, "message": str(e), "errors": e.errors},
+        )
+    except MailProviderError as e:
+        raise HTTPException(400, str(e))
     return {"ok": True, **result, "stats": db.stats()}
 
 
 @app.get("/api/accounts")
-def api_accounts(status: str = "", limit: int = 50, offset: int = 0):
-    items = db.list_accounts(status=status, limit=limit, offset=offset)
-    total = db.count_accounts(status=status)
-    return {"ok": True, "items": items, "total": total}
+def api_accounts(status: str = "", limit: int = 50, offset: int = 0, kind: str = ""):
+    items = db.list_accounts(status=status, limit=limit, offset=offset, kind=kind)
+    total = db.count_accounts(status=status, kind=kind)
+    return {
+        "ok": True,
+        "items": items,
+        "total": total,
+        "by_kind": db.stats_by_kind(),
+    }
 
 
 class ImapImportReq(BaseModel):
@@ -409,29 +441,53 @@ def api_proxy_test(req: ProxyTestReq):
 def api_register(req: RegisterReq):
     """启动注册任务，返回 run_id。前端拿 run_id 去 /api/runs/{run_id}/stream 订阅 SSE。"""
     mail_source = db.get_setting("mail_source", "outlook")
-    uses_catch_all = mail_source in ("cf_temp", "imap")
-
-    if uses_catch_all:
-        # Catch-all 模式：不需要 Outlook 号池，用虚拟占位 account。
-        import time as _t
-        account = {
-            "email": f"{mail_source}_placeholder_{int(_t.time())}@local",
-            "password": "",
-            "client_id": "",
-            "refresh_token": "",
-        }
-    elif mail_source == "imap_pool":
+    if mail_source == "imap_pool":
         account = db.claim_imap_account(req.email or "")
         if not account:
             raise HTTPException(400, "IMAP mailbox pool tidak memiliki mailbox available")
-    elif req.email:
-        account = db.claim_account(req.email)
-        if not account:
-            raise HTTPException(400, f"邮箱 {req.email} 不可用 (不存在 / 已 in_use / 已完成)")
+    elif mail_source == "imap":
+        # IMAP catch-all: address dibuat provider saat register.
+        import time as _t
+        account = {
+            "email": f"{mail_source}_placeholder_{int(_t.time())}@placeholder.local",
+            "password": "",
+            "client_id": "",
+            "refresh_token": "",
+            "relay_url": "",
+            "kind": mail_source,
+        }
     else:
-        account = db.claim_next()
-        if not account:
-            raise HTTPException(400, "号池里没有 available 账号；请先批量导入")
+        try:
+            provider_cls = get_provider_class(mail_source)
+        except MailProviderError as e:
+            raise HTTPException(400, str(e))
+
+        if not provider_cls.pooled:
+            # 非池化：地址由 provider 现造，用占位 account 走完后面的流程
+            import time as _t
+            account = {
+                "email": f"{mail_source}_placeholder_{int(_t.time())}@placeholder.local",
+                "password": "", "client_id": "", "refresh_token": "",
+                "relay_url": "", "kind": mail_source,
+            }
+        elif req.email:
+            account = db.claim_account(req.email)
+            if not account:
+                raise HTTPException(400, f"邮箱 {req.email} 不可用 (不存在 / 已 in_use / 已完成)")
+            if (account.get("kind") or "outlook") != mail_source:
+                db.release_unused(account["email"])
+                raise HTTPException(
+                    400,
+                    f"{req.email} 是 {account.get('kind')} 的号，"
+                    f"当前邮箱来源是 {mail_source}，请先切换来源",
+                )
+        else:
+            account = db.claim_next(kind=mail_source)
+            if not account:
+                raise HTTPException(
+                    400,
+                    f"号池里没有 available 的 {provider_cls.display_name} 账号；请先批量导入",
+                )
 
     options = {
         "want_access_token": req.want_access_token,
@@ -659,32 +715,51 @@ def api_recover_refresh_token_batch(req: RecoverRefreshTokenBatchReq):
 # ──────────────────────── 邮箱来源配置 ────────────────────────
 
 
+@app.get("/api/mail/providers")
+def api_mail_providers(pooled_only: bool = False):
+    """列出所有已注册的邮箱 provider 及其能力 / 配置项声明。
+
+    前端据此渲染「邮箱来源」单选和对应的动态表单 ——
+    以后加邮箱，前端一行都不用改。
+
+        pooled_only=true  只返回能导入号池的（导入页用）
+    """
+    return {
+        "ok": True,
+        "providers": list_pooled_providers() if pooled_only else list_providers(),
+        "current": db.get_setting("mail_source", "outlook"),
+    }
+
+
 @app.get("/api/settings/mail")
 def api_get_mail_config():
     return {"ok": True, "config": db.get_mail_config()}
 
 
 class SaveMailConfigReq(BaseModel):
-    mail_source: Optional[str] = None       # outlook / cf_temp / imap
-    cf_api_url: Optional[str] = None
-    cf_admin_token: Optional[str] = None
-    cf_domain: Optional[str] = None
-    imap_host: Optional[str] = None
-    imap_port: Optional[str] = None
-    imap_username: Optional[str] = None
-    imap_password: Optional[str] = None
-    imap_domain: Optional[str] = None
+    """字段不再写死。
+
+    mail_source 之外的配置项由各 provider 的 config_fields 声明，
+    前端原样回传，db.save_mail_config 按声明逐项存 ——
+    加 provider 时这个模型不用动。
+    """
+
+    model_config = {"extra": "allow"}
+
+    mail_source: Optional[str] = None
 
 
 @app.post("/api/settings/mail")
 def api_save_mail_config(req: SaveMailConfigReq):
-    db.save_mail_config(req.model_dump(exclude_none=True))
+    try:
+        db.save_mail_config(req.model_dump(exclude_none=True))
+    except MailProviderError as e:
+        raise HTTPException(400, str(e))
     return {"ok": True, "config": db.get_mail_config()}
 
 
 @app.post("/api/settings/mail/test")
 def api_test_mail():
-    """Test the active catch-all mailbox configuration."""
     mail_source = db.get_setting("mail_source", "outlook")
     if mail_source == "imap":
         from mail_imap import ImapCatchAllProvider
@@ -701,30 +776,37 @@ def api_test_mail():
             return {"ok": True, "message": "IMAP 登录成功"}
         except Exception as e:
             raise HTTPException(500, f"IMAP 连接失败: {e}")
-    if mail_source != "cf_temp":
-        raise HTTPException(400, f"当前 mail_source={mail_source}，不需要测试")
+    if mail_source == "imap_pool":
+        raise HTTPException(400, "IMAP pool 是号池类型，不需要单独测试")
 
-    api_url = db.get_setting("cf_api_url", "")
-    domain = db.get_setting("cf_domain", "")
-    token = db.get_cf_admin_token()
-    if not api_url:
-        raise HTTPException(400, "未配置 cf_api_url")
-    if not domain:
-        raise HTTPException(400, "未配置 cf_domain")
-    if not token:
-        raise HTTPException(400, "未配置 cf_admin_token")
-
-    import sys as _sys
-    ROOT_DIR = Path(__file__).resolve().parents[1]
-    if str(ROOT_DIR) not in _sys.path:
-        _sys.path.insert(0, str(ROOT_DIR))
-    from mail_cf import CFTempEmailProvider
     try:
-        provider = CFTempEmailProvider(api_url=api_url, admin_token=token, domain=domain)
-        test_email = provider.create_mailbox()
-        return {"ok": True, "message": f"连接成功，测试邮箱: {test_email}"}
+        provider_cls = get_provider_class(mail_source)
+    except MailProviderError as e:
+        raise HTTPException(400, str(e))
+
+    # 池化 provider 的连通性绑定在具体某个号上，没号可测 ——
+    # 它的"测试"就是导入时的格式校验 + 跑一次注册。
+    if provider_cls.pooled:
+        raise HTTPException(
+            400,
+            f"{provider_cls.display_name} 是号池类型，不需要单独测试；"
+            f"导入时会校验格式",
+        )
+
+    try:
+        provider = create_mail_provider(mail_source, db.get_mail_settings())
+    except MailProviderError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"构造 {provider_cls.display_name} 失败: {e}")
+
+    try:
+        result = provider.self_test()
     except Exception as e:
         raise HTTPException(500, f"连接失败: {e}")
+    if not result.get("ok"):
+        raise HTTPException(500, result.get("message") or "连接失败")
+    return {"ok": True, "message": result.get("message", "连接成功")}
 
 
 # ──────────────────────── SMS 接码配置 ────────────────────────

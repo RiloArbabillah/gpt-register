@@ -6,6 +6,10 @@ webui/webui.db-wal
 webui/webui.db-journal
 webui/logs/
 data/*
+*.db.bak
+*.db.backup
+*.sqlite
+*.sqlite3
 run.log
 run*.log
 account_*.json

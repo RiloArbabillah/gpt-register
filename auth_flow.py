@@ -22,7 +22,7 @@ from urllib.parse import urlparse, parse_qs, parse_qsl, urljoin, urlencode, urlu
 
 from config import Config
 from fingerprint import generate_fingerprint, ua_for_impersonate
-from mail_outlook import OutlookMailProvider as MailProvider
+from mail_providers import MailProvider
 from http_client import create_http_session, USER_AGENT
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,18 @@ class AuthResult:
 class AuthFlow:
     """注册/登录协议流"""
 
-    def __init__(self, config: Config, sms_callback: Optional[Any] = None):
+    def __init__(
+        self,
+        config: Config,
+        sms_callback: Optional[Any] = None,
+        env_overrides: Optional[dict] = None,
+    ):
+        # 本次流程专属的配置覆盖（WEBUI_ALLOW_LOGIN / OTP_TIMEOUT / OAuth 开关等）。
+        # ⚠️ 以前 registrar 是直接写 os.environ 再在 finally 里还原的，
+        #    但 auto_loop 会并发跑多个 worker —— A 写的 OTP_TIMEOUT 会被 B 看见，
+        #    B 跑完还原成 A 之前的值，A 后半程就读到别人的配置了。
+        #    现在覆盖值只挂在实例上，进程全局环境一个字节都不动。
+        self._env_overrides = dict(env_overrides or {})
         self.config = config
         self._country_code = ""  # IP 地理国家码，check_proxy() 时填充
         self._fingerprint = generate_fingerprint()  # 先生成默认指纹
@@ -572,9 +583,20 @@ class AuthFlow:
             return ""
         return (payload.get("url", "") or "").strip()
 
-    @staticmethod
-    def _env_flag(name: str, default: str = "0") -> bool:
-        return str(os.getenv(name, default)).lower() in ("1", "true", "yes", "on")
+    def _get_env(self, name: str, default: str = "") -> str:
+        """读配置：本次流程的 env_overrides 优先，回退进程环境变量。
+
+        registrar 通过 AuthFlow(env_overrides=...) 传入，不再写 os.environ，
+        所以并发跑多个号时互不干扰。命令行入口（register_outlook.py）没传
+        overrides，行为跟以前完全一样。
+        """
+        v = self._env_overrides.get(name)
+        return os.getenv(name, default) if v is None else str(v)
+
+    def _env_flag(self, name: str, default: str = "0") -> bool:
+        # 原本是 @staticmethod，为了读 self._env_overrides 改成实例方法。
+        # 调用点全是 self._env_flag(...)，签名不变。
+        return self._get_env(name, default).lower() in ("1", "true", "yes", "on")
 
     @staticmethod
     def _b64url_no_pad(raw: bytes) -> str:
@@ -832,7 +854,7 @@ class AuthFlow:
                 logger.warning("Codex login continuation requires OTP, but no mail_provider was provided")
                 return continue_url or ""
             try:
-                otp_timeout = max(10, int(os.getenv("OTP_TIMEOUT", "60")))
+                otp_timeout = max(10, int(self._get_env("OTP_TIMEOUT", "60")))
             except Exception:
                 otp_timeout = 180
             otp_sent_at = time.time()
@@ -2800,33 +2822,36 @@ class AuthFlow:
         sentinel = self.get_sentinel_token(device_id)
         is_new = self.signup(email, sentinel)
 
-        # outlook 接码池邮箱被 OpenAI 标"已有账号" 处理策略:
+        # 号池邮箱被 OpenAI 标"已有账号" 处理策略:
         #   WEBUI_ALLOW_LOGIN=1 (promo-link 等需要拿 access_token 的模式) → 走 OTP login 拿凭证
         #   WEBUI_ALLOW_LOGIN 未设 (register-only 模式) → fast-fail mark dead 换下一个号
         # 这样 register-only 不被 honeypot 拖死, promo-link 又能复用已存在账号.
-        is_outlook_pool = (not is_new and hasattr(mail_provider, "_outlook_creds")
-                           and bool(mail_provider._outlook_creds))
-        if is_outlook_pool:
-            _allow_login = (os.environ.get("WEBUI_ALLOW_LOGIN", "") or "").strip() in (
+        #
+        # ⚠️ 这个分支对**所有号池型 provider** 生效（outlook / icloud_relay / 以后新增的），
+        #    不是 outlook 专属 —— 日志前缀用 provider 自己的 kind，别写死。
+        pool_tag = getattr(mail_provider, "kind", "pool")
+        is_pooled_existing = not is_new and getattr(mail_provider, "pooled", False)
+        if is_pooled_existing:
+            _allow_login = self._get_env("WEBUI_ALLOW_LOGIN", "").strip() in (
                 "1", "true", "yes",
             )
             if _allow_login:
                 logger.info(
-                    f"[outlook] Existing-account branch with WEBUI_ALLOW_LOGIN=1; using OTP login for credentials ({email})"
+                    f"[{pool_tag}] '已有账号' 分支但 WEBUI_ALLOW_LOGIN=1 → 走 OTP login 拿凭证 ({email})"
                 )
             else:
                 logger.warning(
-                    f"[outlook] Existing-account branch detected mailbox-pool email ({email}); fast-fail and mark dead "
-                    f"so register() claims the next account (set WEBUI_ALLOW_LOGIN=1 to use OTP login)"
+                    f"[{pool_tag}] '已有账号' 分支检测到号池邮箱 ({email}) → fast-fail mark dead, "
+                    f"让外层 register() 自动 claim 下一个号 (设 WEBUI_ALLOW_LOGIN=1 改走 OTP login)"
                 )
                 try:
-                    mail_provider.mark_outlook_dead(
-                        "OpenAI identified this as an existing mailbox-pool account (protocol fast-fail)"
+                    mail_provider.mark_dead(
+                        "OpenAI 识别为已有账号 (接码池二手 / honeypot, 协议层 fast-fail)"
                     )
                 except Exception:
                     pass
                 raise RuntimeError(
-                    f"OpenAI silently refused OTP delivery (identified {email} as an existing account; Outlook pool fast-fail)"
+                    f"OpenAI 静默拒绝发 OTP (识别 {email} 为已有账号, {pool_tag} 池 fast-fail)"
                 )
 
         if is_new:
@@ -2844,7 +2869,7 @@ class AuthFlow:
                 otp_sent_at = time.time()
 
             try:
-                otp_timeout = max(10, int(os.getenv("OTP_TIMEOUT", "60")))
+                otp_timeout = max(10, int(self._get_env("OTP_TIMEOUT", "60")))
             except Exception:
                 otp_timeout = 180
             otp_code = mail_provider.wait_for_otp(
@@ -2890,7 +2915,7 @@ class AuthFlow:
             continue_url = ""
 
             try:
-                otp_timeout = max(10, int(os.getenv("OTP_TIMEOUT", "60")))
+                otp_timeout = max(10, int(self._get_env("OTP_TIMEOUT", "60")))
             except Exception:
                 otp_timeout = 180
 
@@ -2943,13 +2968,17 @@ class AuthFlow:
                         issued_after=otp_sent_at,
                     )
                 except TimeoutError:
-                    # mail/provider IMAP-only 纯协议失败时已设 outlook_exhausted=True 并 mark_dead，
+                    # provider 判定自己已无可用收件链路时会设 exhausted=True 并 mark_dead，
                     # 不 retry 直接 raise，避免再次等待无效收件链路。
-                    if getattr(mail_provider, "outlook_exhausted", False):
-                        logger.warning("[outlook] IMAP-only protocol mail retrieval failed and was marked dead; skipping retry resend")
+                    # （outlook 是 IMAP-only 纯协议失败；别的 provider 有自己的判据。）
+                    if getattr(mail_provider, "exhausted", False):
+                        logger.warning(
+                            f"[{getattr(mail_provider, 'kind', 'mail')}] "
+                            f"收码链路已失效并 mark dead, 跳过 retry resend"
+                        )
                         raise
-                    # 否则 (非 outlook 池场景, 如 catch_all CF KV) 给一次 resend retry
-                        logger.warning("Existing-account OTP did not arrive; resending before waiting again")
+                    # 否则 (非号池场景, 如 catch_all CF KV) 给一次 resend retry
+                    logger.warning("未等到已有账号 OTP，先重发后重试等待")
                     otp_sent_at = time.time()
                     if not self.kickoff_otp_delivery("existing_timeout_retry"):
                         self.send_otp()
@@ -2960,13 +2989,13 @@ class AuthFlow:
                             issued_after=otp_sent_at,
                         )
                     except TimeoutError:
-                        # outlook 池 + "已有账号" 分支 + 两次 timeout = OpenAI 反欺诈
-                        # 静默拒绝（页面声称已注册但不真发邮件）→ mark dead 该 outlook
+                        # 号池 + "已有账号" 分支 + 两次 timeout = OpenAI 反欺诈
+                        # 静默拒绝（页面声称已注册但不真发邮件）→ mark dead 该邮箱
                         # 让池下次跳过，user 重新点 ▶ 自动 claim 下一个 available。
-                        if (hasattr(mail_provider, "_outlook_creds")
-                                and mail_provider._outlook_creds):
+                        # （非号池 provider 如 CF 临时邮箱 mark_dead 是空操作，不用额外判断。）
+                        if getattr(mail_provider, "pooled", False):
                             try:
-                                mail_provider.mark_outlook_dead(
+                                mail_provider.mark_dead(
                                     "OpenAI 静默拒绝发 OTP（'已有账号'但 INBOX 无邮件）"
                                 )
                             except Exception:
@@ -3124,7 +3153,7 @@ class AuthFlow:
 
         continue_url = ""
         try:
-            otp_timeout = max(10, int(os.getenv("OTP_TIMEOUT", "60")))
+            otp_timeout = max(10, int(self._get_env("OTP_TIMEOUT", "60")))
         except Exception:
             otp_timeout = 180
 

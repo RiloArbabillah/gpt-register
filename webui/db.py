@@ -1,8 +1,19 @@
 """SQLite 号池 + 注册结果存储。
 
 表结构：
-  outlook_accounts: 接码号池（4 段格式入库 + 状态机）
+  outlook_accounts: 接码号池（多种邮箱混放，kind 列区分 + 状态机）
   registered:       注册成功结果（凭证 JSON）
+
+关于 outlook_accounts 这个表名：
+    它现在装的不止 outlook（还有 gmail / icloud / qq ...），名字已经不准，
+    但改表名要动迁移和一堆 SQL，收益只是好看一点，风险不值。
+    真正区分类型的是 kind 列。
+
+凭证字段用「并集列」而不是 extra_json：
+    outlook/gmail 用 password+client_id+refresh_token，
+    icloud 这类中转只用 relay_url，各自把不用的列留空。
+    几种邮箱的规模下，并集列比 JSON 好 —— 能建索引、能加约束、
+    SQL 里直接看得见。加新邮箱时如果要新字段，就再 ALTER 加一列。
 """
 from __future__ import annotations
 
@@ -11,6 +22,7 @@ import hashlib
 import os
 import secrets
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -18,6 +30,9 @@ from typing import Optional
 
 DATA_DIR = Path(os.getenv("WEBUI_DATA_DIR", str(Path(__file__).resolve().parent))).resolve()
 DB_PATH = Path(os.getenv("WEBUI_DB_PATH", str(DATA_DIR / "webui.db"))).resolve()
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 _lock = threading.Lock()  # SQLite 写入串行化
 _connections = threading.local()
@@ -50,6 +65,9 @@ def init_db():
             password        TEXT,
             client_id       TEXT,
             refresh_token   TEXT,
+            relay_url       TEXT,       -- 中转取码 URL（icloud 类用，其余留空）
+            kind            TEXT NOT NULL DEFAULT 'outlook',
+                            -- 邮箱类型，对应 mail_providers 注册表的 kind
             status          TEXT NOT NULL DEFAULT 'available',
                             -- available / in_use / done / failed
             imported_at     REAL,
@@ -59,6 +77,8 @@ def init_db():
         );
 
         CREATE INDEX IF NOT EXISTS idx_outlook_status ON outlook_accounts(status);
+        -- idx_outlook_kind 不在这里建：老库此刻还没有 kind 列，
+        -- 建索引会当场报错。放到下面补完列之后再建。
 
         CREATE TABLE IF NOT EXISTS imap_accounts (
             email           TEXT PRIMARY KEY,
@@ -154,30 +174,42 @@ def init_db():
             )
             con.commit()
 
+    # 老 DB migrate：号池多邮箱混放（kind / relay_url 在后期才加）
+    # 存量行全部是 outlook 时代导进去的，DEFAULT 'outlook' 正好把它们
+    # 归位，不需要额外 UPDATE。重复执行无副作用。
+    cur = con.execute("PRAGMA table_info(outlook_accounts)")
+    acc_cols = {r[1] for r in cur.fetchall()}
+    if "kind" not in acc_cols:
+        con.execute(
+            "ALTER TABLE outlook_accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'outlook'"
+        )
+        con.commit()
+    if "relay_url" not in acc_cols:
+        con.execute("ALTER TABLE outlook_accounts ADD COLUMN relay_url TEXT")
+        con.commit()
+    # 索引建在补列之后，否则老库上 CREATE INDEX 会因为没有 kind 列而失败
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_outlook_kind ON outlook_accounts(kind, status)"
+    )
+    con.commit()
+
 
 # ──────────────────────── outlook 号池 ────────────────────────
 
 
-def parse_lines(text: str) -> list[dict]:
-    """解析 4 段格式（每行一个）。无效行跳过。"""
-    out: list[dict] = []
-    for raw in (text or "").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split("----")
-        if len(parts) != 4:
-            continue
-        email, password, client_id, refresh = (p.strip() for p in parts)
-        if "@" not in email or len(refresh) < 20:
-            continue
-        out.append({
-            "email": email.lower(),
-            "password": password,
-            "client_id": client_id,
-            "refresh_token": refresh,
-        })
-    return out
+def parse_lines(text: str, kind: str = "") -> list[dict]:
+    """解析导入文本，委托给 mail_providers 注册表。
+
+    kind 指定 → 用该 provider 的格式解析（推荐）
+    kind 为空 → 按段数猜（段数唯一时才行，Outlook/Gmail 都是 4 段会猜不出）
+
+    非法行抛 ImportValidationError（带行号和原因），**不再静默跳过**。
+    以前这里是 `if len(parts) != 4: continue`，用户看到"导入成功"
+    但号少了几个，完全没法排查。
+    """
+    from mail_providers import parse_import_text
+
+    return parse_import_text(text or "", kind)
 
 
 def parse_imap_lines(text: str) -> list[dict]:
@@ -313,31 +345,49 @@ def delete_imap_accounts(emails: Optional[list[str]] = None, status: str = "") -
         return rc.rowcount
 
 
-def import_accounts(text: str) -> dict:
-    """批量入库。已存在的 email 仅在 refresh_token 不同时更新。"""
-    rows = parse_lines(text)
+def import_accounts(text: str, kind: str = "") -> dict:
+    """批量入库。已存在的 email 仅在凭证变化时更新。
+
+    解析阶段全对才写：有一行非法就整批拒绝（抛 ImportValidationError），
+    不会出现"写进去一半"对不上账的情况。
+    """
+    rows = parse_lines(text, kind)
     now = time.time()
     inserted = updated = skipped = 0
     with _lock:
         con = _conn()
         for r in rows:
+            row_kind = r.get("kind") or kind or "outlook"
+            # 凭证并集：不同 provider 用不同子集，没有的留空字符串
+            password = r.get("password", "") or ""
+            client_id = r.get("client_id", "") or ""
+            refresh = r.get("refresh_token", "") or ""
+            relay = r.get("relay_url", "") or ""
+
             cur = con.execute(
-                "SELECT refresh_token FROM outlook_accounts WHERE email=?",
+                "SELECT refresh_token, relay_url, kind FROM outlook_accounts WHERE email=?",
                 (r["email"],),
             )
             existing = cur.fetchone()
             if existing is None:
                 con.execute(
                     "INSERT INTO outlook_accounts(email, password, client_id, refresh_token, "
-                    "status, imported_at) VALUES (?, ?, ?, ?, 'available', ?)",
-                    (r["email"], r["password"], r["client_id"], r["refresh_token"], now),
+                    "relay_url, kind, status, imported_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'available', ?)",
+                    (r["email"], password, client_id, refresh, relay, row_kind, now),
                 )
                 inserted += 1
-            elif existing["refresh_token"] != r["refresh_token"]:
+            elif (
+                (existing["refresh_token"] or "") != refresh
+                or (existing["relay_url"] or "") != relay
+                or (existing["kind"] or "") != row_kind
+            ):
+                # 凭证或类型变了 → 覆盖并重置为可用
                 con.execute(
                     "UPDATE outlook_accounts SET refresh_token=?, password=?, client_id=?, "
-                    "status='available', imported_at=?, fail_reason=NULL WHERE email=?",
-                    (r["refresh_token"], r["password"], r["client_id"], now, r["email"]),
+                    "relay_url=?, kind=?, status='available', imported_at=?, fail_reason=NULL "
+                    "WHERE email=?",
+                    (refresh, password, client_id, relay, row_kind, now, r["email"]),
                 )
                 updated += 1
             else:
@@ -346,28 +396,55 @@ def import_accounts(text: str) -> dict:
     return {"parsed": len(rows), "inserted": inserted, "updated": updated, "skipped": skipped}
 
 
-def count_accounts(status: str = "") -> int:
+def count_accounts(status: str = "", kind: str = "") -> int:
     con = _conn()
+    sql = "SELECT COUNT(*) FROM outlook_accounts"
+    where, args = [], []
     if status:
-        cur = con.execute("SELECT COUNT(*) FROM outlook_accounts WHERE status=?", (status,))
-    else:
-        cur = con.execute("SELECT COUNT(*) FROM outlook_accounts")
-    return cur.fetchone()[0]
+        where.append("status=?")
+        args.append(status)
+    if kind:
+        where.append("kind=?")
+        args.append(kind.strip().lower())
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    return con.execute(sql, args).fetchone()[0]
 
 
-def list_accounts(status: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
+def list_accounts(
+    status: str = "", limit: int = 50, offset: int = 0, kind: str = ""
+) -> list[dict]:
     con = _conn()
+    sql = "SELECT * FROM outlook_accounts"
+    where, args = [], []
     if status:
-        cur = con.execute(
-            "SELECT * FROM outlook_accounts WHERE status=? ORDER BY imported_at DESC LIMIT ? OFFSET ?",
-            (status, limit, offset),
+        where.append("status=?")
+        args.append(status)
+    if kind:
+        where.append("kind=?")
+        args.append(kind.strip().lower())
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY imported_at DESC LIMIT ? OFFSET ?"
+    args += [limit, offset]
+    return [dict(r) for r in con.execute(sql, args).fetchall()]
+
+
+def stats_by_kind() -> dict:
+    """按邮箱类型分组统计，给 WebUI 顶部展示"每种邮箱各有多少号"。"""
+    con = _conn()
+    cur = con.execute(
+        "SELECT kind, status, COUNT(*) AS n FROM outlook_accounts GROUP BY kind, status"
+    )
+    out: dict[str, dict] = {}
+    for r in cur.fetchall():
+        k = r["kind"] or "outlook"
+        slot = out.setdefault(
+            k, {"available": 0, "in_use": 0, "done": 0, "failed": 0, "total": 0}
         )
-    else:
-        cur = con.execute(
-            "SELECT * FROM outlook_accounts ORDER BY imported_at DESC LIMIT ? OFFSET ?",
-            (limit, offset),
-        )
-    return [dict(r) for r in cur.fetchall()]
+        slot[r["status"]] = r["n"]
+        slot["total"] += r["n"]
+    return out
 
 
 def get_account(email: str) -> Optional[dict]:
@@ -382,6 +459,9 @@ def claim_account(email: str) -> Optional[dict]:
 
     failed 也允许重试 claim：之前 OpenAI 风控误判 / 网络抖动等导致 fail 的号
     应允许用户手动重试，已 done 的号才禁止重 claim（防误覆盖凭证）。
+
+    按 email 指定时不过滤 kind —— 用户点名要这个号，它是什么类型
+    由记录自己的 kind 列说了算，调用方读 account["kind"] 即可。
     """
     email = (email or "").strip().lower()
     if not email:
@@ -406,26 +486,43 @@ def claim_account(email: str) -> Optional[dict]:
         return dict(row)
 
 
-def claim_next() -> Optional[dict]:
-    """原子 claim 任一 available 号。"""
+def claim_next(kind: str = "") -> Optional[dict]:
+    """原子 claim 任一 available 号。
+
+    kind 指定 → 只从该类型里挑（"选了 gmail 就只跑 gmail 号"）
+    kind 为空 → 全池子里挑最早导入的
+
+    多类型混放的关键就在这里：号池里 outlook 和 gmail 并存，
+    但当前配置选了哪种，就只 claim 哪种，不会串。
+    """
+    k = (kind or "").strip().lower()
     with _lock:
         con = _conn()
-        cur = con.execute(
-            "SELECT * FROM outlook_accounts WHERE status='available' "
-            "ORDER BY imported_at ASC LIMIT 1"
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        rc = con.execute(
-            "UPDATE outlook_accounts SET status='in_use', claimed_at=? "
-            "WHERE email=? AND status='available'",
-            (time.time(), row["email"]),
-        )
-        con.commit()
-        if rc.rowcount != 1:
-            return claim_next()
-        return dict(row)
+        for _ in range(50):  # 有限重试，避免并发抢号时无限递归爆栈
+            if k:
+                cur = con.execute(
+                    "SELECT * FROM outlook_accounts WHERE status='available' AND kind=? "
+                    "ORDER BY imported_at ASC LIMIT 1",
+                    (k,),
+                )
+            else:
+                cur = con.execute(
+                    "SELECT * FROM outlook_accounts WHERE status='available' "
+                    "ORDER BY imported_at ASC LIMIT 1"
+                )
+            row = cur.fetchone()
+            if not row:
+                return None
+            rc = con.execute(
+                "UPDATE outlook_accounts SET status='in_use', claimed_at=? "
+                "WHERE email=? AND status='available'",
+                (time.time(), row["email"]),
+            )
+            con.commit()
+            if rc.rowcount == 1:
+                return dict(row)
+            # 被别的线程抢走了，换下一个再试
+        return None
 
 
 def mark_done(email: str) -> None:
@@ -1014,38 +1111,87 @@ def revoke_session(token: str) -> None:
 
 
 def get_mail_config() -> dict:
-    """返回邮箱来源配置（admin_token 隐藏明文）。"""
-    return {
-        "mail_source":   get_setting("mail_source", "outlook"),  # outlook / cf_temp / imap
-        "cf_api_url":    get_setting("cf_api_url", ""),
-        "cf_admin_token": "***" if get_setting("cf_admin_token") else "",
-        "cf_domain":     get_setting("cf_domain", ""),
-        "imap_host":     get_setting("imap_host", ""),
-        "imap_port":     get_setting("imap_port", "993"),
-        "imap_username": get_setting("imap_username", ""),
-        "imap_password": "***" if get_setting("imap_password") else "",
-        "imap_domain":   get_setting("imap_domain", ""),
-    }
+    """返回邮箱来源配置（密码类字段隐藏明文）。
+
+    provider 声明的配置项自动带出来 —— 加新邮箱时这里不用改，
+    新 provider 的 config_fields 会自动出现在返回值里。
+    """
+    from mail_providers import list_providers
+
+    out = {"mail_source": get_setting("mail_source", "outlook")}
+    for p in list_providers():
+        for f in p["config_fields"]:
+            key = f["key"]
+            if f.get("type") == "password":
+                out[key] = "***" if get_setting(key) else ""
+            else:
+                out[key] = get_setting(key, "")
+    # IMAP catch-all / pool (fitur lokal; imap tidak terdaftar di registry upstream)
+    out["imap_host"] = get_setting("imap_host", "")
+    out["imap_port"] = get_setting("imap_port", "993")
+    out["imap_username"] = get_setting("imap_username", "")
+    out["imap_password"] = "***" if get_setting("imap_password") else ""
+    out["imap_domain"] = get_setting("imap_domain", "")
+    return out
 
 
 def save_mail_config(data: dict) -> None:
-    """保存邮箱配置。admin_token 传 '***' 表示不修改。"""
+    """保存邮箱配置。password 类字段传 '***' 表示不修改。
+
+    mail_source 校验改成查 mail_providers 注册表：
+        以前是写死的白名单 ("outlook", "cf_temp")，选了别的会被
+        **静默改回 outlook** —— 用户看到的是"保存成功但选择没生效"。
+        现在未知来源直接抛错，问题当场暴露。
+    """
+    from mail_providers import get_provider_class, list_providers
+
     if "mail_source" in data:
         src = str(data["mail_source"]).strip().lower()
-        if src not in ("outlook", "cf_temp", "imap", "imap_pool"):
-            src = "outlook"
-        set_setting("mail_source", src)
-    if "cf_api_url" in data:
-        set_setting("cf_api_url", str(data["cf_api_url"]).strip())
-    if "cf_domain" in data:
-        set_setting("cf_domain", str(data["cf_domain"]).strip())
-    if data.get("cf_admin_token") and data["cf_admin_token"] != "***":
-        set_setting("cf_admin_token", str(data["cf_admin_token"]).strip())
+        if src in ("imap", "imap_pool"):
+            # Fitur lokal: imap tidak terdaftar di registry mail_providers.
+            set_setting("mail_source", src)
+        else:
+            get_provider_class(src)  # 未注册的 kind 会抛 MailProviderError
+            set_setting("mail_source", src)
+
+    # 按 provider 声明的字段保存，加新邮箱时这里零改动
+    for p in list_providers():
+        for f in p["config_fields"]:
+            key = f["key"]
+            if key not in data:
+                continue
+            val = data[key]
+            if f.get("type") == "password":
+                if not val or val == "***":
+                    continue  # 没填 / 是掩码 → 保持原值
+            set_setting(key, str(val).strip())
+
+    # IMAP settings (fitur lokal)
     for key in ("imap_host", "imap_port", "imap_username", "imap_domain"):
         if key in data:
             set_setting(key, str(data[key]).strip())
     if data.get("imap_password") and data["imap_password"] != "***":
         set_setting("imap_password", str(data["imap_password"]).strip())
+
+
+def get_secret_setting(key: str) -> str:
+    """内部用：拿密码类配置的明文。"""
+    return get_setting(key, "")
+
+
+def get_mail_settings() -> dict:
+    """内部用：给 create_mail_provider 的 settings（含明文密钥）。
+
+    跟 get_mail_config 的区别：这个不打码，只在服务端构造 provider 时用，
+    绝不能直接返回给前端。
+    """
+    from mail_providers import list_providers
+
+    out = {"mail_source": get_setting("mail_source", "outlook")}
+    for p in list_providers():
+        for f in p["config_fields"]:
+            out[f["key"]] = get_setting(f["key"], "")
+    return out
 
 
 def get_cf_admin_token() -> str:

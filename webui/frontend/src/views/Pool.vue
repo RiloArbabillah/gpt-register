@@ -1,5 +1,5 @@
 <script setup>
-import { onActivated, ref, watch } from 'vue'
+import { computed, onActivated, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -7,6 +7,7 @@ import {
   listAccounts, deleteAccount, bulkDeleteAccounts, resetFailed,
   resetAccount, bulkResetAccounts, releaseStale,
 } from '@/api/accounts'
+import { getMailProviders } from '@/api/settings'
 import { useStatsStore } from '@/stores/stats'
 import { useRuntimeStore } from '@/stores/runtime'
 import StatusDot from '@/components/StatusDot.vue'
@@ -21,23 +22,48 @@ const rows = ref([])
 const total = ref(0)
 const page = ref(1)
 const statusFilter = ref('')
+const kindFilter = ref('')
 const bulkStatus = ref('')
 const selected = ref([])
 const loading = ref(false)
+// 号池现在可以混放多种邮箱，这两个用来显示「来源」列和按来源过滤
+const providers = ref([])
+const byKind = ref({})
 
 const STATUS_TYPE = { available: 'success', in_use: 'warning', done: 'primary', failed: 'danger' }
+
+// 列表里只列池子里真有号的来源，免得下拉框塞一堆空选项
+const kindOptions = computed(() =>
+  providers.value.filter((p) => p.pooled).map((p) => ({
+    kind: p.kind,
+    label: p.display_name,
+    count: byKind.value[p.kind]?.total || 0,
+  })),
+)
+
+function kindLabel(k) {
+  return providers.value.find((p) => p.kind === k)?.display_name || k || 'outlook'
+}
+
+async function loadProviders() {
+  try {
+    providers.value = (await getMailProviders()).providers || []
+  } catch (_) { /* 拿不到就退化成显示原始 kind 字符串 */ }
+}
 
 async function load(resetPage) {
   if (resetPage) page.value = 1
   loading.value = true
   try {
-    const { items, total: t } = await listAccounts({
+    const { items, total: t, by_kind } = await listAccounts({
       status: statusFilter.value,
+      kind: kindFilter.value,
       limit: PAGE_SIZE,
       offset: (page.value - 1) * PAGE_SIZE,
     })
     rows.value = items
     total.value = t
+    byKind.value = by_kind || {}
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -105,6 +131,7 @@ async function deleteOne(email) {
 watch(page, () => load())
 watch(dataVersion, () => load())
 onActivated(() => load())
+loadProviders()
 </script>
 <template>
   <div class="page">
@@ -120,6 +147,17 @@ onActivated(() => load())
           <el-option label="in_use" value="in_use" />
           <el-option label="done" value="done" />
           <el-option label="failed" value="failed" />
+        </el-select>
+        <!-- 号池混放多种邮箱时才有意义，只有一种来源就不显示 -->
+        <el-select
+          v-if="kindOptions.length > 1"
+          v-model="kindFilter" placeholder="全部来源" style="width: 190px" @change="load(true)"
+        >
+          <el-option label="全部来源" value="" />
+          <el-option
+            v-for="o in kindOptions" :key="o.kind"
+            :label="`${o.label} (${o.count})`" :value="o.kind"
+          />
         </el-select>
         <el-button @click="load(false)"><el-icon><Refresh /></el-icon>刷新</el-button>
         <el-button @click="resetFailedAll">重试 failed</el-button>
@@ -151,6 +189,11 @@ onActivated(() => load())
       >
         <el-table-column type="selection" width="44" />
         <el-table-column prop="email" label="邮箱" min-width="220" show-overflow-tooltip />
+        <el-table-column v-if="kindOptions.length > 1" label="来源" width="130">
+          <template #default="{ row }">
+            <el-tag size="small" type="info">{{ kindLabel(row.kind) }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <StatusDot :type="STATUS_TYPE[row.status] || 'info'" :text="row.status" />

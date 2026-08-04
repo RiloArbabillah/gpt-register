@@ -4,10 +4,13 @@ import http from './request'
 export const getStats = () => http.get('/api/stats')
 
 // ──────────────── 号池 accounts ────────────────
-export const importAccounts = (text) => http.post('/api/import', { text })
+// kind = 邮箱来源（outlook / ...）。留空后端会按段数猜，
+// 但 Outlook 和 Gmail 都是 4 段猜不出来，所以页面上必选。
+export const importAccounts = (text, kind = '') =>
+  http.post('/api/import', { text, kind })
 
 export const listAccounts = (params) =>
-  http.get('/api/accounts', { params }) // { status, limit, offset }
+  http.get('/api/accounts', { params }) // { status, limit, offset, kind }
 
 export const deleteAccount = (email) =>
   http.delete(`/api/accounts/${encodeURIComponent(email)}`)

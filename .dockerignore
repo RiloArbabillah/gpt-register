@@ -1,0 +1,13 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+data
+webui/webui.db
+webui/logs
+webui/frontend/node_modules
+webui/frontend/dist
+webui/static
+*.log
+.DS_Store

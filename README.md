@@ -63,6 +63,18 @@ python3 start_webui.py
 
 `webui.db` is ignored by Git and is not removed or overwritten by `git pull`. Database migrations only add required schema changes.
 
+### Docker Deployment
+
+The container stores the SQLite database, SMS cache, and registration logs in `/data`. Set the first admin credentials before starting it:
+
+```bash
+export ADMIN_USERNAME=admin
+export ADMIN_PASSWORD='replace-with-a-password-of-at-least-8-characters'
+docker compose up -d --build
+```
+
+Open `http://127.0.0.1:8765/` and sign in with those credentials. The bind-mounted `./data` directory persists across container rebuilds. When serving the WebUI through HTTPS, set `AUTH_COOKIE_SECURE=1` in the environment; keep it `0` only for plain HTTP local access.
+
 ## Proxy Behavior and Country Allowlist
 
 When no manual proxy is entered and direct connection is not explicitly enabled, the application downloads free HTTP CONNECT and SOCKS5 proxies from ProxyScrape. Only proxies that can reach an HTTPS endpoint are used.

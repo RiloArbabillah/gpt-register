@@ -7,13 +7,17 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+import secrets
 import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path(__file__).resolve().parent / "webui.db"
+DATA_DIR = Path(os.getenv("WEBUI_DATA_DIR", str(Path(__file__).resolve().parent))).resolve()
+DB_PATH = Path(os.getenv("WEBUI_DB_PATH", str(DATA_DIR / "webui.db"))).resolve()
 
 _lock = threading.Lock()  # SQLite 写入串行化
 _connections = threading.local()
@@ -100,6 +104,28 @@ def init_db():
             error           TEXT,
             error_category  TEXT         -- network / account / unknown
         );
+
+        CREATE TABLE IF NOT EXISTS users (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            username        TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            password_hash   TEXT NOT NULL,
+            role            TEXT NOT NULL DEFAULT 'user',
+            is_active       INTEGER NOT NULL DEFAULT 1,
+            created_at      REAL NOT NULL,
+            last_login_at   REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash      TEXT NOT NULL UNIQUE,
+            csrf_hash       TEXT NOT NULL,
+            created_at      REAL NOT NULL,
+            last_seen_at    REAL NOT NULL,
+            expires_at      REAL NOT NULL,
+            revoked_at      REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_token ON auth_sessions(token_hash);
     """)
     con.commit()
     # 老 DB migrate：error_category 在后期才加，对已建表补列
@@ -116,6 +142,17 @@ def init_db():
         con.execute("ALTER TABLE registered ADD COLUMN source TEXT")
         con.execute("UPDATE registered SET source='imap' WHERE source IS NULL OR source='' ")
         con.commit()
+
+    # Optional first-run bootstrap for container deployments.
+    if not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+        bootstrap_username = str(os.getenv("ADMIN_USERNAME") or "").strip()
+        bootstrap_password = str(os.getenv("ADMIN_PASSWORD") or "")
+        if bootstrap_username and len(bootstrap_password) >= 8:
+            con.execute(
+                "INSERT INTO users(username,password_hash,role,is_active,created_at) VALUES (?,?, 'admin', 1, ?)",
+                (bootstrap_username, hash_password(bootstrap_password), time.time()),
+            )
+            con.commit()
 
 
 # ──────────────────────── outlook 号池 ────────────────────────
@@ -788,6 +825,147 @@ def set_setting(key: str, value) -> None:
             (key, str(value)),
         )
         con.commit()
+
+
+# ──────────────────────── authentication ────────────────────────
+
+def hash_password(password: str) -> str:
+    from pwdlib import PasswordHash
+    return PasswordHash.recommended().hash(str(password))
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        from pwdlib import PasswordHash
+        return PasswordHash.recommended().verify(str(password), str(password_hash))
+    except Exception:
+        return False
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+
+def _user_dict(row) -> dict:
+    return {"id": int(row["id"]), "username": str(row["username"]), "role": str(row["role"]),
+            "is_active": bool(row["is_active"]), "created_at": row["created_at"],
+            "last_login_at": row["last_login_at"]}
+
+
+def list_users() -> list[dict]:
+    rows = _conn().execute("SELECT id,username,role,is_active,created_at,last_login_at FROM users ORDER BY username").fetchall()
+    return [_user_dict(row) for row in rows]
+
+
+def get_user(user_id: int) -> Optional[dict]:
+    row = _conn().execute("SELECT id,username,role,is_active,created_at,last_login_at FROM users WHERE id=?", (int(user_id),)).fetchone()
+    return _user_dict(row) if row else None
+
+
+def authenticate_user(username: str, password: str) -> Optional[dict]:
+    row = _conn().execute("SELECT * FROM users WHERE username=? COLLATE NOCASE", (str(username).strip(),)).fetchone()
+    if not row or not bool(row["is_active"]) or not verify_password(password, row["password_hash"]):
+        return None
+    with _lock:
+        _conn().execute("UPDATE users SET last_login_at=? WHERE id=?", (time.time(), row["id"]))
+        _conn().commit()
+    return get_user(int(row["id"]))
+
+
+def create_user(username: str, password: str, role: str = "user") -> dict:
+    username, role = str(username or "").strip(), str(role or "user").strip().lower()
+    if len(username) < 3 or len(username) > 80:
+        raise ValueError("Username must be between 3 and 80 characters")
+    if len(password or "") < 8:
+        raise ValueError("Password must be at least 8 characters")
+    if role not in {"admin", "user"}:
+        raise ValueError("Invalid role")
+    try:
+        with _lock:
+            con = _conn()
+            cur = con.execute("INSERT INTO users(username,password_hash,role,is_active,created_at) VALUES (?,?,?,1,?)",
+                              (username, hash_password(password), role, time.time()))
+            con.commit()
+            user_id = cur.lastrowid
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("Username already exists") from exc
+    return get_user(int(user_id))
+
+
+def update_user(user_id: int, *, role: Optional[str] = None, is_active: Optional[bool] = None,
+               password: Optional[str] = None) -> dict:
+    user = get_user(user_id)
+    if not user:
+        raise ValueError("User not found")
+    next_role = role or user["role"]
+    next_active = user["is_active"] if is_active is None else bool(is_active)
+    if next_role not in {"admin", "user"}:
+        raise ValueError("Invalid role")
+    if password is not None and len(password) < 8:
+        raise ValueError("Password must be at least 8 characters")
+    if user["role"] == "admin" and (next_role != "admin" or not next_active):
+        count = _conn().execute("SELECT COUNT(*) FROM users WHERE role='admin' AND is_active=1").fetchone()[0]
+        if count <= 1:
+            raise ValueError("The last active admin cannot be removed or disabled")
+    fields, values = ["role=?", "is_active=?"], [next_role, int(next_active)]
+    if password is not None:
+        fields.append("password_hash=?")
+        values.append(hash_password(password))
+    values.append(int(user_id))
+    with _lock:
+        con = _conn()
+        con.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=?", values)
+        if password is not None:
+            con.execute("UPDATE auth_sessions SET revoked_at=? WHERE user_id=?", (time.time(), int(user_id)))
+        con.commit()
+    return get_user(user_id)
+
+
+def delete_user(user_id: int) -> None:
+    user = get_user(user_id)
+    if not user:
+        raise ValueError("User not found")
+    if user["role"] == "admin":
+        count = _conn().execute("SELECT COUNT(*) FROM users WHERE role='admin' AND is_active=1").fetchone()[0]
+        if count <= 1:
+            raise ValueError("The last active admin cannot be deleted")
+    with _lock:
+        _conn().execute("DELETE FROM users WHERE id=?", (int(user_id),))
+        _conn().commit()
+
+
+def create_session(user_id: int, *, absolute_seconds: int = 7 * 86400) -> tuple[str, str]:
+    now = time.time()
+    token, csrf = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
+    with _lock:
+        _conn().execute("INSERT INTO auth_sessions(user_id,token_hash,csrf_hash,created_at,last_seen_at,expires_at) VALUES (?,?,?,?,?,?)",
+                        (int(user_id), _token_hash(token), _token_hash(csrf), now, now, now + absolute_seconds))
+        _conn().commit()
+    return token, csrf
+
+
+def get_auth_session(token: str, csrf: str = "") -> Optional[dict]:
+    if not token:
+        return None
+    row = _conn().execute("SELECT s.*,u.username,u.role,u.is_active FROM auth_sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?",
+                          (_token_hash(token),)).fetchone()
+    now = time.time()
+    if (not row or row["revoked_at"] or not row["is_active"] or row["expires_at"] <= now
+            or row["last_seen_at"] + 12 * 3600 <= now):
+        return None
+    if csrf and row["csrf_hash"] != _token_hash(csrf):
+        return None
+    with _lock:
+        _conn().execute("UPDATE auth_sessions SET last_seen_at=? WHERE id=?", (now, row["id"]))
+        _conn().commit()
+    return {"id": int(row["user_id"]), "username": row["username"], "role": row["role"], "csrf_hash": row["csrf_hash"]}
+
+
+def revoke_session(token: str) -> None:
+    if token:
+        with _lock:
+            _conn().execute("UPDATE auth_sessions SET revoked_at=? WHERE token_hash=?", (time.time(), _token_hash(token)))
+            _conn().commit()
 
 
 # ──────────────────────── 邮箱来源配置 ────────────────────────

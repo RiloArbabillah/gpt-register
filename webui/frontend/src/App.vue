@@ -1,11 +1,13 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import en from 'element-plus/es/locale/lang/en'
 import AdminLayout from '@/layouts/AdminLayout.vue'
 import { translateEnglish, useLocaleStore } from '@/stores/locale'
 
 const locale = useLocaleStore()
+const route = useRoute()
 const elementLocale = computed(() => locale.locale === 'en' ? en : zhCn)
 let observer
 
@@ -41,6 +43,7 @@ onBeforeUnmount(() => observer?.disconnect())
 
 <template>
   <el-config-provider :locale="elementLocale">
-    <AdminLayout />
+    <router-view v-if="route.meta?.public" />
+    <AdminLayout v-else />
   </el-config-provider>
 </template>

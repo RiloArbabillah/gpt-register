@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -46,6 +47,36 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="GPT Outlook Register WebUI", docs_url=None, redoc_url=None)
 
+AUTH_COOKIE = "gpt_register_session"
+CSRF_COOKIE = "gpt_register_csrf"
+PUBLIC_API_PATHS = {"/api/health", "/api/auth/login"}
+ADMIN_API_PREFIXES = (
+    "/api/settings", "/api/import", "/api/imap_accounts", "/api/admin/users",
+)
+
+
+def _secure_cookies() -> bool:
+    return str(os.getenv("AUTH_COOKIE_SECURE", "0")).lower() in {"1", "true", "yes", "on"}
+
+
+@app.middleware("http")
+async def authentication_middleware(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/") or path in PUBLIC_API_PATHS:
+        return await call_next(request)
+    token = request.cookies.get(AUTH_COOKIE, "")
+    user = db.get_auth_session(token)
+    if not user:
+        return JSONResponse({"detail": "Authentication required"}, status_code=401)
+    if any(path.startswith(prefix) for prefix in ADMIN_API_PREFIXES) and user["role"] != "admin":
+        return JSONResponse({"detail": "Administrator access required"}, status_code=403)
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        csrf = request.headers.get("X-CSRF-Token", "")
+        if not csrf or not db.get_auth_session(token, csrf):
+            return JSONResponse({"detail": "CSRF validation failed"}, status_code=403)
+    request.state.user = user
+    return await call_next(request)
+
 
 # ──────────────────────── Pydantic 模型 ────────────────────────
 
@@ -65,12 +96,88 @@ class RegisterReq(BaseModel):
     allow_existing_login: bool = True
 
 
+class LoginReq(BaseModel):
+    username: str
+    password: str
+
+
+class CreateUserReq(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+
+
+class UpdateUserReq(BaseModel):
+    role: Optional[str] = None
+    password: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
 # ──────────────────────── API ────────────────────────
 
 
 @app.get("/api/health")
 def health():
     return {"ok": True, "stats": db.stats()}
+
+
+@app.post("/api/auth/login")
+def api_login(req: LoginReq):
+    user = db.authenticate_user(req.username, req.password)
+    if not user:
+        raise HTTPException(401, "Invalid username or password")
+    token, csrf = db.create_session(user["id"])
+    response = JSONResponse({"ok": True, "user": user, "csrf_token": csrf})
+    response.set_cookie(AUTH_COOKIE, token, httponly=True, secure=_secure_cookies(), samesite="lax",
+                        max_age=7 * 86400, path="/")
+    response.set_cookie(CSRF_COOKIE, csrf, httponly=False, secure=_secure_cookies(), samesite="lax",
+                        max_age=7 * 86400, path="/")
+    return response
+
+
+@app.get("/api/auth/me")
+def api_me(request: Request):
+    return {"ok": True, "user": request.state.user}
+
+
+@app.post("/api/auth/logout")
+def api_logout(request: Request):
+    token = request.cookies.get(AUTH_COOKIE, "")
+    db.revoke_session(token)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(AUTH_COOKIE, path="/")
+    response.delete_cookie(CSRF_COOKIE, path="/")
+    return response
+
+
+@app.get("/api/admin/users")
+def api_list_users():
+    return {"ok": True, "users": db.list_users()}
+
+
+@app.post("/api/admin/users")
+def api_create_user(req: CreateUserReq):
+    try:
+        return {"ok": True, "user": db.create_user(req.username, req.password, req.role)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.patch("/api/admin/users/{user_id}")
+def api_update_user(user_id: int, req: UpdateUserReq):
+    try:
+        return {"ok": True, "user": db.update_user(user_id, role=req.role, password=req.password, is_active=req.is_active)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.delete("/api/admin/users/{user_id}")
+def api_delete_user(user_id: int):
+    try:
+        db.delete_user(user_id)
+        return {"ok": True}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/api/import")

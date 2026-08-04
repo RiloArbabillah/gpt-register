@@ -31,7 +31,7 @@ _run_queues: dict[str, queue.Queue] = {}
 _lock = threading.Lock()
 _refresh_token_recoveries: set[str] = set()
 
-LOG_DIR = Path(__file__).resolve().parent / "logs"
+LOG_DIR = Path(os.getenv("WEBUI_DATA_DIR", str(Path(__file__).resolve().parent))).resolve() / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 

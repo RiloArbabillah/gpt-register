@@ -6,6 +6,12 @@ NProgress.configure({ showSpinner: false, trickleSpeed: 120, minimum: 0.15 })
 // hash 路由：不依赖后端做 SPA 回退，FastAPI / 未来 Gin 都零配置可用。
 const routes = [
   {
+    path: '/login',
+    name: 'login',
+    component: () => import('@/views/Login.vue'),
+    meta: { public: true },
+  },
+  {
     path: '/',
     name: 'dashboard',
     component: () => import('@/views/Dashboard.vue'),
@@ -15,7 +21,7 @@ const routes = [
     path: '/import',
     name: 'import',
     component: () => import('@/views/Import.vue'),
-    meta: { titleKey: 'import', icon: 'Upload', groupKey: 'registration' },
+    meta: { titleKey: 'import', icon: 'Upload', groupKey: 'registration', admin: true },
   },
   {
     path: '/register',
@@ -39,13 +45,13 @@ const routes = [
     path: '/pool',
     name: 'pool',
     component: () => import('@/views/Pool.vue'),
-    meta: { titleKey: 'pool', icon: 'Files', groupKey: 'data' },
+    meta: { titleKey: 'pool', icon: 'Files', groupKey: 'data', admin: true },
   },
   {
     path: '/imap-pool',
     name: 'imap-pool',
     component: () => import('@/views/ImapPool.vue'),
-    meta: { titleKey: 'imapPool', icon: 'Message', groupKey: 'data' },
+    meta: { titleKey: 'imapPool', icon: 'Message', groupKey: 'data', admin: true },
   },
   {
     path: '/registered',
@@ -63,19 +69,25 @@ const routes = [
     path: '/settings/mail',
     name: 'mail',
     component: () => import('@/views/MailConfig.vue'),
-    meta: { titleKey: 'mail', icon: 'Message', groupKey: 'settings' },
+    meta: { titleKey: 'mail', icon: 'Message', groupKey: 'settings', admin: true },
   },
   {
     path: '/settings/sms',
     name: 'sms',
     component: () => import('@/views/SmsConfig.vue'),
-    meta: { titleKey: 'sms', icon: 'Iphone', groupKey: 'settings' },
+    meta: { titleKey: 'sms', icon: 'Iphone', groupKey: 'settings', admin: true },
   },
   {
     path: '/settings/export',
     name: 'export',
     component: () => import('@/views/ExportConfig.vue'),
-    meta: { titleKey: 'export', icon: 'Share', groupKey: 'settings' },
+    meta: { titleKey: 'export', icon: 'Share', groupKey: 'settings', admin: true },
+  },
+  {
+    path: '/settings/users',
+    name: 'users',
+    component: () => import('@/views/Users.vue'),
+    meta: { titleKey: 'users', icon: 'User', groupKey: 'settings', admin: true },
   },
 ]
 
@@ -85,8 +97,14 @@ const router = createRouter({
 })
 
 // 路由切换顶部进度条
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   NProgress.start()
+  if (to.meta?.public) return next()
+  const { useAuthStore } = await import('@/stores/auth')
+  const auth = useAuthStore()
+  if (!auth.user) await auth.load()
+  if (!auth.user) return next({ name: 'login', query: { redirect: to.fullPath } })
+  if (to.meta?.admin && auth.user.role !== 'admin') return next({ name: 'dashboard' })
   if (to.meta?.titleKey) document.title = 'Outlook Register'
   next()
 })

@@ -15,6 +15,19 @@ const http = axios.create({
   timeout: 60000,
 })
 
+function csrfToken() {
+  const item = document.cookie.split('; ').find((row) => row.startsWith('gpt_register_csrf='))
+  return item ? decodeURIComponent(item.split('=').slice(1).join('=')) : ''
+}
+
+http.interceptors.request.use((config) => {
+  if (['post', 'put', 'patch', 'delete'].includes(String(config.method || '').toLowerCase())) {
+    const csrf = csrfToken()
+    if (csrf) config.headers['X-CSRF-Token'] = csrf
+  }
+  return config
+})
+
 // 统一解包 + 错误提示。后端约定：非 2xx 时 body 里有 detail 字段。
 http.interceptors.response.use(
   (resp) => resp.data,

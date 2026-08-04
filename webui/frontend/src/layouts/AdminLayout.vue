@@ -6,6 +6,7 @@ import { useThemeStore } from '@/stores/theme'
 import { useStatsStore } from '@/stores/stats'
 import { useRuntimeStore } from '@/stores/runtime'
 import { useLocaleStore } from '@/stores/locale'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const router = useRouter()
@@ -13,6 +14,7 @@ const theme = useThemeStore()
 const statsStore = useStatsStore()
 const runtime = useRuntimeStore()
 const locale = useLocaleStore()
+const auth = useAuthStore()
 const { stats } = storeToRefs(statsStore)
 const { banner } = storeToRefs(runtime)
 
@@ -23,7 +25,7 @@ const GROUP_ORDER = ['overview', 'registration', 'data', 'settings']
 const groups = computed(() => {
   const map = {}
   for (const r of router.getRoutes()) {
-    if (!r.meta?.titleKey) continue
+    if (!r.meta?.titleKey || (r.meta?.admin && auth.user?.role !== 'admin')) continue
     const g = r.meta.groupKey || 'other'
     ;(map[g] ||= []).push(r)
   }
@@ -35,7 +37,7 @@ const crumb = computed(() => [route.meta.groupKey, route.meta.titleKey].filter(B
 
 const menuOptions = computed(() =>
   router.getRoutes()
-    .filter((r) => r.meta?.titleKey)
+    .filter((r) => r.meta?.titleKey && (!r.meta?.admin || auth.user?.role === 'admin'))
     .map((r) => ({ value: r.path, label: `${locale.t(r.meta.groupKey)} / ${locale.t(r.meta.titleKey)}` })),
 )
 const search = ref('')
@@ -51,6 +53,11 @@ const statPills = computed(() => [
   { label: locale.t('done'), value: stats.value.done, type: 'primary' },
   { label: locale.t('failed'), value: stats.value.failed, type: 'danger' },
 ])
+
+async function signOut() {
+  await auth.logout()
+  router.replace({ name: 'login' })
+}
 
 onMounted(() => {
   theme.apply()
@@ -111,7 +118,7 @@ onMounted(() => {
           <el-dropdown>
             <span class="avatar">
               <el-avatar :size="28" class="avatar-img"><el-icon><User /></el-icon></el-avatar>
-              <span class="avatar-name">{{ locale.t('administrator') }}</span>
+              <span class="avatar-name">{{ auth.user?.username || locale.t('administrator') }}</span>
               <el-icon :size="12"><ArrowDown /></el-icon>
             </span>
             <template #dropdown>
@@ -119,6 +126,7 @@ onMounted(() => {
                 <el-dropdown-item @click="theme.toggle">
                   {{ theme.dark ? locale.t('light') : locale.t('dark') }}
                 </el-dropdown-item>
+                <el-dropdown-item divided @click="signOut">Sign Out</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>

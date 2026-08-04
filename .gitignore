@@ -5,7 +5,7 @@ webui/webui.db-shm
 webui/webui.db-wal
 webui/webui.db-journal
 webui/logs/
-data/
+data/*
 run.log
 run*.log
 account_*.json

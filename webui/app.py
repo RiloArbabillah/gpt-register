@@ -121,6 +121,16 @@ def health():
     return {"ok": True, "stats": db.stats()}
 
 
+@app.get("/api/admin/sentinel/status")
+def api_sentinel_status():
+    """Return non-secret Sentinel/Node/cache diagnostics for administrators."""
+    try:
+        from sentinel_quickjs import sentinel_runtime_status
+        return {"ok": True, **sentinel_runtime_status()}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:240]}
+
+
 @app.post("/api/auth/login")
 def api_login(req: LoginReq):
     user = db.authenticate_user(req.username, req.password)

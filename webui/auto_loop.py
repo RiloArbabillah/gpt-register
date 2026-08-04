@@ -224,7 +224,7 @@ class AutoLoopController:
                 self._consecutive_network_fails = 0
             else:
                 self._registered_fail += 1
-                if category == "network":
+                if category in {"network", "sentinel_so_token_missing"}:
                     self._consecutive_network_fails += 1
                 else:
                     self._consecutive_network_fails = 0

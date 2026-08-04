@@ -579,15 +579,23 @@ async function dispatchBehavior(durationMs) {
       if (mainToken) {
         await dispatchBehavior(behaviorMs);
         let soToken = '';
+        let soError = '';
         try {
+          const observerMethod = [
+            'sessionObserverToken',
+            'getSessionObserverToken',
+            'observerToken',
+          ].find((name) => typeof context.SentinelSDK[name] === 'function');
+          if (!observerMethod) throw new Error('Sentinel SDK observer method unavailable');
           soToken = await Promise.race([
-            context.SentinelSDK.sessionObserverToken(flow),
+            context.SentinelSDK[observerMethod](flow),
             new Promise((_, rej) => setTimeout(() => rej(new Error('SO timeout')), 5000)),
           ]);
-        } catch (_) {
+        } catch (err) {
+          soError = String(err && err.message ? err.message : err).slice(0, 160);
           soToken = '';
         }
-        process.stdout.write(JSON.stringify({ token: mainToken, so_token: soToken || '' }));
+        process.stdout.write(JSON.stringify({ token: mainToken, so_token: soToken || '', so_error: soError }));
         return;
       }
     } catch (_) {}

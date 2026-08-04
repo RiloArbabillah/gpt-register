@@ -11,16 +11,24 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     WEBUI_DATA_DIR=/data \
+    OPENAI_SENTINEL_CACHE_DIR=/data/sentinel \
+    OPENAI_SENTINEL_NODE_PATH=node \
+    OPENAI_SENTINEL_AUTO_DISCOVER=1 \
+    OPENAI_SENTINEL_RETRY_COUNT=2 \
+    OPENAI_SENTINEL_TIMEOUT_MS=45000 \
     AUTH_COOKIE_SECURE=0
 
 WORKDIR /app
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir -r requirements.txt
 COPY . ./
 COPY --from=frontend-build /build/webui/static ./webui/static
 
 RUN useradd --create-home --uid 10001 appuser \
-    && mkdir -p /data \
+    && mkdir -p /data/sentinel \
     && chown -R appuser:appuser /app /data
 USER appuser
 

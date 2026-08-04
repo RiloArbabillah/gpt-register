@@ -97,6 +97,8 @@ def classify_error(err: str) -> str:
     s = (err or "").lower()
     if "proxy_unavailable" in s:
         return "proxy_unavailable"
+    if "sentinel_so_token_missing" in s:
+        return "sentinel_so_token_missing"
     # 先匹配 account 特征（更具体），避免子串误命中（如 "outlook OTP timeout" 含 "timeout"）
     if any(p in s for p in (
         "wrong_email_otp_code", "invalid_grant", "imap xoauth2",
@@ -324,13 +326,14 @@ def _do_register(
         logging.getLogger("registrar").error(f"[register] failed (category={category}): {err}")
         if category != "account":
             logging.getLogger("registrar").error(traceback.format_exc())
+        environment_error = category in {"network", "sentinel_so_token_missing"}
         if mail_source == "imap_pool":
-            if category == "network":
+            if environment_error:
                 db.release_imap_account(email)
             else:
                 db.mark_imap_failed(email, f"[{category}] {err}")
         elif mail_source not in ("cf_temp", "imap"):
-            if category == "network":
+            if environment_error:
                 db.release_unused(email)
                 logging.getLogger("registrar").warning(
                     f"[register] {email} classified as a network/environment error; mailbox released to available"

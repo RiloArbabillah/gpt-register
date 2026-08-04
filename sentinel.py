@@ -12,6 +12,7 @@ OpenAI Sentinel Token 生成入口。
 from __future__ import annotations
 
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +51,15 @@ def get_sentinel_token(
     """返回 (sentinel_token, so_token) 元组。失败抛 RuntimeError。"""
     try:
         from sentinel_quickjs import get_sentinel_token_via_quickjs
+        try:
+            timeout_ms = max(10000, min(120000, int(os.getenv("OPENAI_SENTINEL_TIMEOUT_MS", "45000"))))
+        except ValueError:
+            timeout_ms = 45000
         qresult = get_sentinel_token_via_quickjs(
             session,
             device_id=device_id,
             flow=flow,
+            timeout_ms=timeout_ms,
             log=lambda m: logger.info(m),
             user_agent=user_agent,
             screen=screen,
@@ -75,7 +81,7 @@ def get_sentinel_token(
         )
         if qresult:
             return qresult
-        raise RuntimeError("Sentinel QuickJS failed (missing SO token); aborting registration to avoid account bans")
+        raise RuntimeError("sentinel_so_token_missing: QuickJS could not obtain the SO token after retries; registration aborted to avoid account bans")
     except ImportError as e:
         raise RuntimeError(f"Sentinel QuickJS module is missing: {e}")
     except RuntimeError:

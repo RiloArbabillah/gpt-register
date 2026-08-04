@@ -79,6 +79,8 @@ docker compose up -d --build
 
 Open `http://127.0.0.1:8765/` and sign in with those credentials. The bind-mounted `./data` directory persists across container rebuilds. When serving the WebUI through HTTPS, set `AUTH_COOKIE_SECURE=1` in the environment; keep it `0` only for plain HTTP local access.
 
+For EasyPanel deployments, the final container image includes Node.js for the QuickJS Sentinel worker. The Sentinel SDK cache is stored in `/data/sentinel` and survives container restarts. Administrators can inspect the non-secret runtime state at `/api/admin/sentinel/status`.
+
 ### 5sim SMS Behavior
 
 5sim uses one active order for up to three successful accounts or 20 minutes. The application keeps the original `order_id` and polls that order for a new SMS code; it does not call the 5sim `/user/reuse` endpoint. Previously received codes are ignored. If the order expires, reaches the success limit, or is canceled, the next registration rents a new number.
@@ -145,6 +147,12 @@ node --version
 | `OAUTH_CODEX_RT_EXCHANGE` | `1` | Set to `1` to attempt the Codex OAuth refresh-token exchange. |
 | `OAUTH_REFRESH_ONLY` | `0` | Set to `1` to request only a refresh token and skip session work. |
 | `OPENAI_SENTINEL_NODE_PATH` | `node` | Path to the Node.js executable. |
+| `OPENAI_SENTINEL_CACHE_DIR` | `WEBUI_DATA_DIR/sentinel` | Persistent directory for downloaded Sentinel SDK files. |
+| `OPENAI_SENTINEL_VERSION` | last cached/default | Optional SDK version override. |
+| `OPENAI_SENTINEL_SDK_URL` | version-based URL | Optional SDK URL; `{version}` is replaced when present. |
+| `OPENAI_SENTINEL_AUTO_DISCOVER` | `1` | Discover the SDK version from OpenAI bootstrap responses before using the cached/default version. |
+| `OPENAI_SENTINEL_RETRY_COUNT` | `2` | Retry count after a Sentinel/SO-token failure. |
+| `OPENAI_SENTINEL_TIMEOUT_MS` | `45000` | QuickJS and Sentinel request timeout budget. |
 | `LOGIN_PASSWORD` | — | Password used for the existing-account login branch. |
 | `AUTH_HTTP_TRACE` | `0` | Set to `1` to log request method, URL, status, and cookies. |
 | `AUTH_TRACE_DUMP` | `0` | Set to `1` to write full HTTP traces to `outputs/auth_trace_*.jsonl`. |
@@ -161,6 +169,7 @@ OpenAI may require the `add-phone` step before a refresh token is available. Ena
 |---|---|---|
 | SmsBower | `smsbower.page` | Number reuse, V2 API, and automatic resend. |
 | HeroSMS | `hero-sms.com` | SMS-Activate-compatible provider with broad country coverage. |
+| 5sim | `5sim.net` | Reuses the same order ID for subsequent SMS codes. |
 
 Configuration fields:
 

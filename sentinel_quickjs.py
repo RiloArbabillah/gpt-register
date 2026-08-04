@@ -31,8 +31,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
-import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -40,8 +41,7 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 
-SENTINEL_VERSION = "20260219f9f6"
-SENTINEL_SDK_URL = f"https://sentinel.openai.com/sentinel/{SENTINEL_VERSION}/sdk.js"
+DEFAULT_SENTINEL_VERSION = "20260219f9f6"
 SENTINEL_REQ_URL = "https://sentinel.openai.com/backend-api/sentinel/req"
 
 
@@ -56,13 +56,98 @@ def _quickjs_script_path() -> Path:
 _sdk_file_cache: Optional[Path] = None
 
 
-def _ensure_sdk_file(session: Any, timeout_ms: int) -> Path:
-    """Download OpenAI's actual sdk.js to /tmp cache (one-shot per version)."""
+def _cache_root() -> Path:
+    configured = (os.getenv("OPENAI_SENTINEL_CACHE_DIR", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    data_dir = (os.getenv("WEBUI_DATA_DIR", "") or "").strip()
+    if data_dir:
+        return Path(data_dir).expanduser().resolve() / "sentinel"
+    return Path(__file__).resolve().parent / "data" / "sentinel"
+
+
+def _version_file() -> Path:
+    return _cache_root() / "version.txt"
+
+
+def _resolve_version() -> str:
+    configured = (os.getenv("OPENAI_SENTINEL_VERSION", "") or "").strip()
+    if configured:
+        return configured
+    try:
+        cached = _version_file().read_text(encoding="utf-8").strip()
+        if cached:
+            return cached
+    except OSError:
+        pass
+    return DEFAULT_SENTINEL_VERSION
+
+
+def _discover_version(session: Any, timeout_ms: int) -> Optional[str]:
+    """Best-effort discovery from bootstrap HTML; never blocks fallback startup."""
+    if str(os.getenv("OPENAI_SENTINEL_AUTO_DISCOVER", "1")).lower() in {"0", "false", "no", "off"}:
+        return None
+    pattern = re.compile(r"(?:sentinel/|[?&]sv=)([A-Za-z0-9_-]{8,})")
+    for url in ("https://auth.openai.com/", "https://chatgpt.com/auth/login"):
+        try:
+            response = session.get(url, timeout=max(5, int(timeout_ms / 1000)))
+            source = f"{getattr(response, 'url', '')} {getattr(response, 'text', '')}"
+            match = pattern.search(source)
+            if match:
+                return match.group(1)
+        except Exception:
+            continue
+    return None
+
+
+def _sdk_url(version: str) -> str:
+    configured = (os.getenv("OPENAI_SENTINEL_SDK_URL", "") or "").strip()
+    if configured:
+        return configured.replace("{version}", version)
+    return f"https://sentinel.openai.com/sentinel/{version}/sdk.js"
+
+
+def sentinel_runtime_status() -> dict:
+    """Return non-secret runtime state for the admin diagnostics endpoint."""
+    version = (os.getenv("OPENAI_SENTINEL_VERSION", "") or "").strip()
+    if not version:
+        version = _discover_version(session, timeout_ms) or _resolve_version()
+        try:
+            _version_file().parent.mkdir(parents=True, exist_ok=True)
+            _version_file().write_text(version, encoding="utf-8")
+        except OSError:
+            pass
+    sdk_file = _cache_root() / version / "sdk.js"
+    node = _resolve_node_binary()
+    try:
+        node_version = subprocess.run(
+            [node, "--version"], capture_output=True, text=True, timeout=5,
+        ).stdout.strip() or None
+        node_error = None
+    except Exception as exc:
+        node_version = None
+        node_error = str(exc)[:180]
+    return {
+        "node_path": node,
+        "node_version": node_version,
+        "node_error": node_error,
+        "version": version,
+        "sdk_url": _sdk_url(version),
+        "sdk_path": str(sdk_file),
+        "sdk_cached": sdk_file.is_file() and sdk_file.stat().st_size > 0,
+        "sdk_bytes": sdk_file.stat().st_size if sdk_file.is_file() else 0,
+        "cache_dir": str(_cache_root()),
+    }
+
+
+def _ensure_sdk_file(session: Any, timeout_ms: int, version: str) -> Path:
+    """Download OpenAI's SDK to the persistent cache, once per version."""
     global _sdk_file_cache
-    if _sdk_file_cache and _sdk_file_cache.exists():
+    expected_file = _cache_root() / version / "sdk.js"
+    if _sdk_file_cache and _sdk_file_cache == expected_file and _sdk_file_cache.exists():
         return _sdk_file_cache
 
-    cache_dir = Path(tempfile.gettempdir()) / "openai-sentinel-demo" / SENTINEL_VERSION
+    cache_dir = _cache_root() / version
     cache_dir.mkdir(parents=True, exist_ok=True)
     sdk_file = cache_dir / "sdk.js"
     if sdk_file.exists() and sdk_file.stat().st_size > 0:
@@ -70,7 +155,7 @@ def _ensure_sdk_file(session: Any, timeout_ms: int) -> Path:
         return sdk_file
 
     resp = session.get(
-        SENTINEL_SDK_URL,
+        _sdk_url(version),
         headers={
             "accept": "*/*",
             "accept-language": "zh-CN,zh;q=0.9",
@@ -86,7 +171,14 @@ def _ensure_sdk_file(session: Any, timeout_ms: int) -> Path:
     content = getattr(resp, "content", b"") or (resp.text or "").encode()
     if not content:
         raise RuntimeError("Failed to download sdk.js: empty response")
-    sdk_file.write_bytes(content)
+    tmp_file = sdk_file.with_suffix(f".tmp-{os.getpid()}-{int(time.time() * 1000)}")
+    tmp_file.write_bytes(content)
+    tmp_file.replace(sdk_file)
+    try:
+        _version_file().parent.mkdir(parents=True, exist_ok=True)
+        _version_file().write_text(version, encoding="utf-8")
+    except OSError:
+        pass
     _sdk_file_cache = sdk_file
     return sdk_file
 
@@ -129,6 +221,7 @@ def _fetch_sentinel_challenge(
     device_id: str,
     flow: str,
     request_p: str,
+    version: str,
     timeout_ms: int,
 ) -> dict:
     body = {"p": request_p, "id": device_id, "flow": flow}
@@ -137,7 +230,7 @@ def _fetch_sentinel_challenge(
         data=json.dumps(body, separators=(",", ":")),
         headers={
             "origin": "https://sentinel.openai.com",
-            "referer": f"https://sentinel.openai.com/backend-api/sentinel/frame.html?sv={SENTINEL_VERSION}",
+            "referer": f"https://sentinel.openai.com/backend-api/sentinel/frame.html?sv={version}",
             "content-type": "text/plain;charset=UTF-8",
             "accept": "*/*",
             "accept-encoding": "gzip, deflate, br, zstd",
@@ -190,6 +283,7 @@ def get_sentinel_token_via_quickjs(
     传入的浏览器家族画像喂给 sdk.js 的 navigator，避免 UA 说 Windows Chrome 但
     navigator 报 MacIntel/Apple 的硬伤。未传时按 UA 推断合理默认值。
     """
+    global _sdk_file_cache
     log = log or (lambda m: logger.info(m))
     quickjs_script = _quickjs_script_path()
     if not quickjs_script.exists():
@@ -250,55 +344,54 @@ def get_sentinel_token_via_quickjs(
     if device_memory is not None:
         env_payload["device_memory"] = int(device_memory)
 
+    version = _resolve_version()
     try:
-        sdk_file = _ensure_sdk_file(session, timeout_ms)
+        retry_count = max(0, min(5, int(os.getenv("OPENAI_SENTINEL_RETRY_COUNT", "2"))))
+    except ValueError:
+        retry_count = 2
+    for attempt in range(1, retry_count + 2):
+        try:
+            sdk_file = _ensure_sdk_file(session, timeout_ms, version)
+            requirements = _run_quickjs_action(
+                action="requirements", sdk_file=sdk_file, quickjs_script=quickjs_script,
+                payload=env_payload, timeout_ms=timeout_ms,
+            )
+            request_p = str(requirements.get("request_p") or "").strip()
+            if not request_p:
+                raise RuntimeError("requirements_missing_request_p")
 
-        requirements = _run_quickjs_action(
-            action="requirements",
-            sdk_file=sdk_file,
-            quickjs_script=quickjs_script,
-            payload=env_payload,
-            timeout_ms=timeout_ms,
-        )
-        request_p = str(requirements.get("request_p") or "").strip()
-        if not request_p:
-            log("Sentinel QuickJS 失败: requirements 未返回 request_p")
-            return None
+            challenge = _fetch_sentinel_challenge(
+                session, device_id=did, flow=flow, request_p=request_p,
+                version=version, timeout_ms=timeout_ms,
+            )
+            if not str(challenge.get("token") or "").strip():
+                raise RuntimeError("challenge_missing_token")
 
-        challenge = _fetch_sentinel_challenge(
-            session, device_id=did, flow=flow, request_p=request_p, timeout_ms=timeout_ms,
-        )
-        c_value = str(challenge.get("token") or "").strip()
-        if not c_value:
-            log("Sentinel QuickJS 失败: challenge token 为空")
-            return None
-
-        solve_payload = dict(env_payload)
-        solve_payload.update({
-            "request_p": request_p,
-            "challenge": challenge,
-            "flow": flow,
-            "behavior_duration_ms": 4200,
-        })
-        solved = _run_quickjs_action(
-            action="solve",
-            sdk_file=sdk_file,
-            quickjs_script=quickjs_script,
-            payload=solve_payload,
-            timeout_ms=timeout_ms,
-        )
-
-        so_token_raw = str(solved.get("so_token") or "").strip()
-
-        sdk_token = str(solved.get("token") or "").strip()
-        if sdk_token and so_token_raw:
-            log(f"Sentinel QuickJS OK (len={len(sdk_token)}, so=Y)")
-            return (sdk_token, so_token_raw)
-        if sdk_token:
-            log("Sentinel QuickJS 失败: 主 token 有但 SO token 为空，中止以避免封号")
-        else:
-            log("Sentinel QuickJS 失败: SDK token 为空，中止以避免封号")
-        return None
-    except Exception as e:
-        log(f"Sentinel QuickJS 异常: {e}")
-        return None
+            solve_payload = dict(env_payload)
+            solve_payload.update({
+                "request_p": request_p, "challenge": challenge,
+                "flow": flow, "behavior_duration_ms": 4200,
+            })
+            solved = _run_quickjs_action(
+                action="solve", sdk_file=sdk_file, quickjs_script=quickjs_script,
+                payload=solve_payload, timeout_ms=timeout_ms,
+            )
+            sdk_token = str(solved.get("token") or "").strip()
+            so_token_raw = str(solved.get("so_token") or "").strip()
+            if sdk_token and so_token_raw:
+                log(f"Sentinel QuickJS OK (version={version}, attempt={attempt}, len={len(sdk_token)}, so=Y)")
+                return (sdk_token, so_token_raw)
+            reason = "so_token_missing" if sdk_token else "sdk_token_missing"
+            so_error = str(solved.get("so_error") or "").strip()
+            detail = f" detail={so_error}" if so_error else ""
+            log(f"Sentinel QuickJS retryable failure: {reason}{detail} version={version} attempt={attempt}/{retry_count + 1}")
+            if reason == "so_token_missing":
+                sdk_file.unlink(missing_ok=True)
+                if _sdk_file_cache == sdk_file:
+                    _sdk_file_cache = None
+        except Exception as exc:
+            log(f"Sentinel QuickJS attempt {attempt}/{retry_count + 1} failed: {str(exc)[:240]}")
+        if attempt <= retry_count:
+            time.sleep(min(2.0, 0.5 * attempt))
+    log(f"Sentinel QuickJS failed after {retry_count + 1} attempts: SO token unavailable")
+    return None

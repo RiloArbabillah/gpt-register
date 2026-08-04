@@ -15,6 +15,7 @@ const country = ref('150')
 const service = ref('dr')
 const maxPrice = ref('')
 const phoneSuccessMax = ref('3')
+const reuseCooldownSeconds = ref('240')
 const reusePhone = ref(false)
 const autoCountry = ref(false)
 const autoMinStock = ref('20')
@@ -62,6 +63,7 @@ async function load() {
       : (config.sms_service || 'dr')
     maxPrice.value = config.sms_max_price || ''
     phoneSuccessMax.value = config.sms_phone_success_max || '3'
+    reuseCooldownSeconds.value = config.sms_reuse_cooldown_seconds || '240'
     reusePhone.value = config.sms_reuse_phone === '1'
     autoCountry.value = config.sms_auto_country === '1'
     autoMinStock.value = config.sms_auto_min_stock || '20'
@@ -94,6 +96,7 @@ async function save() {
       sms_service: service.value.trim() || (provider.value === '5sim' ? 'openai' : 'dr'),
       sms_max_price: maxPrice.value.trim(),
       sms_phone_success_max: phoneSuccessMax.value.trim() || '3',
+      sms_reuse_cooldown_seconds: reuseCooldownSeconds.value.trim() || '240',
       sms_reuse_phone: reusePhone.value ? '1' : '0',
       sms_auto_country: autoCountry.value ? '1' : '0',
       sms_allowed_countries: allowed.value.join(','),
@@ -157,20 +160,25 @@ onActivated(() => load())
         </el-row>
 
         <el-row :gutter="16">
-          <el-col :span="12">
+          <el-col :span="8">
             <el-form-item label="号码最高单价（空=不限）">
               <el-input v-model="maxPrice" placeholder="0.5" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :span="8">
             <el-form-item label="同号成功复用上限（默认 3）">
               <el-input v-model="phoneSuccessMax" type="number" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="同号复用冷却秒数（180-300，默认 240）">
+              <el-input v-model="reuseCooldownSeconds" type="number" min="180" max="300" placeholder="240" />
             </el-form-item>
           </el-col>
         </el-row>
 
         <el-form-item>
-          <el-checkbox v-model="reusePhone"><b>启用号码复用</b>（同号最多复用多次，5sim 硬上限 20 分钟）</el-checkbox>
+          <el-checkbox v-model="reusePhone"><b>启用号码复用</b>（成功后等待冷却时间再复用，5sim 硬上限 20 分钟）</el-checkbox>
         </el-form-item>
         <el-divider content-position="left">自动选择最优国家（按价格 + 库存）</el-divider>
         <el-form-item>

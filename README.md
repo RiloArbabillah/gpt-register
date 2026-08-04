@@ -188,6 +188,7 @@ Configuration fields:
 | `sms_max_price` | Maximum price per number for HeroSMS and SmsBower. |
 | `sms_reuse_phone` | Reuse a number when the provider supports it. |
 | `sms_phone_success_max` | Maximum registrations per reused number. |
+| `sms_reuse_cooldown_seconds` | Delay between successful registrations on the same number. Defaults to 240 seconds and is clamped to 180-300 seconds. The next job waits for this cooldown, then reuses the same SmsBower activation or 5sim order if its lifetime/success limit remains valid. |
 | `sms_auto_country` | Select a provider's best available permitted country automatically. |
 
 ## Project Layout

@@ -1035,6 +1035,7 @@ def get_sms_config() -> dict:
     sms_max_price:      号码最高单价（SmsBower / SmsBower 用，单位平台货币；空 / -1 = 不限）
     sms_reuse_phone:    '0'/'1' 同号复用（SmsBower / SmsBower 支持，省钱）
     sms_phone_success_max: 同号最多复用几次（默认 3）
+    sms_reuse_cooldown_seconds: 同号复用冷却秒数（默认 240，范围 180-300）
     sms_auto_country:   '0'/'1' 自动选最优国家（按价格 + 库存）
     sms_auto_min_stock: 自动选国家最低库存（默认 20）
     sms_auto_max_price: 自动选国家最高单价（默认 0 = 不限）
@@ -1048,6 +1049,7 @@ def get_sms_config() -> dict:
         "sms_max_price":           get_setting("sms_max_price", ""),
         "sms_reuse_phone":         get_setting("sms_reuse_phone", "0"),
         "sms_phone_success_max":   get_setting("sms_phone_success_max", "3"),
+        "sms_reuse_cooldown_seconds": get_setting("sms_reuse_cooldown_seconds", "240"),
         "sms_auto_country":        get_setting("sms_auto_country", "0"),
         "sms_strict_whitelist":    get_setting("sms_strict_whitelist", "0"),
         "sms_allowed_countries":   get_setting("sms_allowed_countries", ""),
@@ -1071,7 +1073,7 @@ def save_sms_config(data: dict) -> None:
     for key in (
         "sms_country", "sms_service", "sms_max_price",
         "sms_phone_success_max", "sms_auto_min_stock", "sms_auto_max_price",
-        "sms_max_phone_attempts", "sms_per_phone_timeout",
+        "sms_reuse_cooldown_seconds", "sms_max_phone_attempts", "sms_per_phone_timeout",
         "sms_allowed_countries",
     ):
         if key in data:
@@ -1101,6 +1103,7 @@ def get_sms_internal_config() -> dict:
         "sms_max_price":           get_setting("sms_max_price", ""),
         "sms_reuse_phone":         get_setting("sms_reuse_phone", "0") in ("1", "true"),
         "sms_phone_success_max":   get_setting("sms_phone_success_max", "3"),
+        "sms_reuse_cooldown_seconds": get_setting("sms_reuse_cooldown_seconds", "240"),
         "sms_auto_country":        get_setting("sms_auto_country", "0") in ("1", "true"),
         "sms_strict_whitelist":    get_setting("sms_strict_whitelist", "0") in ("1", "true"),
         "sms_allowed_countries":   get_setting("sms_allowed_countries", ""),

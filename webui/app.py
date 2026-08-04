@@ -744,6 +744,7 @@ class SaveSmsConfigReq(BaseModel):
     sms_max_price: Optional[str] = None
     sms_reuse_phone: Optional[str] = None
     sms_phone_success_max: Optional[str] = None
+    sms_reuse_cooldown_seconds: Optional[str] = None  # 同号复用冷却（默认 240，范围 180-300）
     sms_auto_country: Optional[str] = None
     sms_strict_whitelist: Optional[str] = None
     sms_allowed_countries: Optional[str] = None    # 逗号分隔的 ID 列表，自动选号时只从这里挑

@@ -146,6 +146,7 @@ def country_label(country_id) -> str:
 SMS_DEFAULT_SERVICE = "dr"
 SMS_DEFAULT_COUNTRY = "52"  # Thailand —— OpenAI 走 SMS 的稳定国家
 SMS_PHONE_LIFETIME = 20 * 60  # 号码租用窗口（秒）
+SMS_REUSE_COOLDOWN_DEFAULT = 4 * 60  # provider/OpenAI 同号复用冷却（秒）
 _SMS_CACHE_LOCK = threading.Lock()
 _SMS_VERIFY_LOCK = threading.RLock()
 _SMS_CACHE: Optional[dict] = None  # 跨线程共享的号码复用缓存
@@ -242,6 +243,7 @@ class SmsBowerProvider(BaseSmsProvider):
         proxy: Optional[str] = None,
         reuse_phone_to_max: bool = True,
         phone_success_max: int = 3,
+        reuse_cooldown_seconds: int = SMS_REUSE_COOLDOWN_DEFAULT,
     ):
         self.api_key = str(api_key or "").strip()
         self.base_url = str(base_url or "").strip() or self.DEFAULT_BASE_URL
@@ -252,6 +254,7 @@ class SmsBowerProvider(BaseSmsProvider):
         self._proxies = {"http": self._proxy, "https": self._proxy} if self._proxy else None
         self.reuse_phone_to_max = bool(reuse_phone_to_max)
         self.phone_success_max = max(0, int(phone_success_max or 0))
+        self.reuse_cooldown_seconds = max(0, int(reuse_cooldown_seconds or 0))
         self._resend_callback: Optional[Callable[[], None]] = None
         self.last_code_result: Optional[dict] = None
         self.current_activation: Optional[SmsActivation] = None
@@ -550,6 +553,16 @@ class SmsBowerProvider(BaseSmsProvider):
                 # success; it must not make an existing usable cache invisible.
                 cache = self._load_cache(service_code, country_candidates[0])
                 if cache and str(cache.get("country") or "") in country_candidates:
+                    cooldown_until = float(cache.get("cooldown_until") or 0)
+                    if cooldown_until > time.time():
+                        wait_seconds = cooldown_until - time.time()
+                        logger.info(
+                            "SmsBower reuse cooldown active; waiting %.0fs before reusing %s",
+                            wait_seconds, cache.get("phone_number", ""),
+                        )
+                        time.sleep(wait_seconds)
+                        cache = self._load_cache(service_code, country_candidates[0])
+                if cache and str(cache.get("country") or "") in country_candidates:
                     activation = SmsActivation(
                         activation_id=str(cache["activation_id"]),
                         phone_number=str(cache["phone_number"]),
@@ -585,6 +598,7 @@ class SmsBowerProvider(BaseSmsProvider):
                                 "used_codes": set(),
                                 "reuse_stopped": False,
                                 "stop_reason": "",
+                                "cooldown_until": 0,
                             }
                             self._save_cache(cache)
                             activation = SmsActivation(
@@ -749,6 +763,8 @@ class SmsBowerProvider(BaseSmsProvider):
                     should_finish = True
                     should_clear = True
                     cache["reuse_stopped"] = True
+                else:
+                    cache["cooldown_until"] = time.time() + self.reuse_cooldown_seconds
                 self._save_cache(cache)
                 if should_clear:
                     self._clear_cache()
@@ -830,7 +846,8 @@ class FiveSimProvider(BaseSmsProvider):
     def __init__(self, api_key: str, *, base_url: str = "", default_service: str = DEFAULT_PRODUCT,
                  default_country: str = DEFAULT_COUNTRY, max_price: float = -1,
                  proxy: Optional[str] = None, reuse_phone_to_max: bool = True,
-                 phone_success_max: int = 3):
+                 phone_success_max: int = 3,
+                 reuse_cooldown_seconds: int = SMS_REUSE_COOLDOWN_DEFAULT):
         self.api_key = str(api_key or "").strip()
         self.base_url = (str(base_url or "").strip() or self.DEFAULT_BASE_URL).rstrip("/")
         self.default_service = str(default_service or self.DEFAULT_PRODUCT).strip() or self.DEFAULT_PRODUCT
@@ -840,6 +857,7 @@ class FiveSimProvider(BaseSmsProvider):
         self._proxies = {"http": self._proxy, "https": self._proxy} if self._proxy else None
         self.reuse_phone_to_max = bool(reuse_phone_to_max)
         self.phone_success_max = max(0, int(phone_success_max or 0))
+        self.reuse_cooldown_seconds = max(0, int(reuse_cooldown_seconds or 0))
         self.last_code_result: Optional[dict] = None
         self.current_activation: Optional[SmsActivation] = None
         self._resend_callback: Optional[Callable[[], None]] = None
@@ -950,6 +968,16 @@ class FiveSimProvider(BaseSmsProvider):
             with _SMS_CACHE_LOCK:
                 cache = self._load_cache(product, candidates[0])
                 if cache and str(cache.get("country")) in candidates:
+                    cooldown_until = float(cache.get("cooldown_until") or 0)
+                    if cooldown_until > time.time():
+                        wait_seconds = cooldown_until - time.time()
+                        logger.info(
+                            "5sim reuse cooldown active; waiting %.0fs before reusing %s",
+                            wait_seconds, cache.get("phone_number", ""),
+                        )
+                        time.sleep(wait_seconds)
+                        cache = self._load_cache(product, candidates[0])
+                if cache and str(cache.get("country")) in candidates:
                     try:
                         status = self.get_status(str(cache["activation_id"]))
                         if status.get("status") == "cancel":
@@ -986,7 +1014,7 @@ class FiveSimProvider(BaseSmsProvider):
                                  "expires_at": expires_at, "api_expires": data.get("expires"),
                                  "price": price,
                                  "use_count": 0, "used_codes": set(), "reuse_stopped": False,
-                                 "stop_reason": ""}
+                                 "stop_reason": "", "cooldown_until": 0}
                         self._save_cache(cache)
                         activation = SmsActivation(aid, phone, cid,
                                                    {"reused": False, "expires_at": expires_at,
@@ -1087,6 +1115,7 @@ class FiveSimProvider(BaseSmsProvider):
                     # 5sim keeps the same order open for subsequent SMS codes.
                     # Persist the increment so a process restart cannot exceed
                     # the configured per-order success limit.
+                    cache["cooldown_until"] = time.time() + self.reuse_cooldown_seconds
                     self._save_cache(cache)
         if should_finish:
             return self._finish_order(activation_id)
@@ -1142,6 +1171,9 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
     max_price = _safe_float(config.get("sms_max_price"), -1)
     reuse = _safe_bool(config.get("sms_reuse_phone"), False)
     succ_max = max(0, _safe_int(config.get("sms_phone_success_max"), 3))
+    cooldown = max(180, min(300, _safe_int(
+        config.get("sms_reuse_cooldown_seconds"), SMS_REUSE_COOLDOWN_DEFAULT,
+    )))
 
     if pk in ("smsbower", "sms_bower"):
         return SmsBowerProvider(api_key=api_key,
@@ -1150,7 +1182,8 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
                                 max_price=max_price,
                                 proxy=proxy,
                                 reuse_phone_to_max=reuse,
-                                phone_success_max=succ_max)
+                                phone_success_max=succ_max,
+                                reuse_cooldown_seconds=cooldown)
     if pk in ("herosms", "hero_sms"):
         return SmsBowerProvider(api_key=api_key,
                                 base_url="https://hero-sms.com/stubs/handler_api.php",
@@ -1159,7 +1192,8 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
                                 max_price=max_price,
                                 proxy=proxy,
                                 reuse_phone_to_max=reuse,
-                                phone_success_max=succ_max)
+                                phone_success_max=succ_max,
+                                reuse_cooldown_seconds=cooldown)
     if pk in ("5sim", "fivesim"):
         return FiveSimProvider(api_key=api_key,
                                default_service=service or "openai",
@@ -1167,7 +1201,8 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
                                max_price=max_price,
                                proxy=proxy,
                                reuse_phone_to_max=reuse,
-                               phone_success_max=succ_max)
+                               phone_success_max=succ_max,
+                               reuse_cooldown_seconds=cooldown)
     raise RuntimeError(f"Unknown SMS provider: {provider_key}")
 
 

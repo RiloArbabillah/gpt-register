@@ -61,7 +61,9 @@ class SentinelQuickJsTests(unittest.TestCase):
             "OPENAI_SENTINEL_AUTO_DISCOVER": "0",
             "OPENAI_SENTINEL_CACHE_DIR": "/private/tmp/gpt-register-sentinel-test",
         }), patch.object(sentinel, "_ensure_sdk_file", return_value=sdk_file), \
-                patch.object(sentinel, "_fetch_sentinel_challenge", return_value={"token": "challenge"}), \
+                patch.object(sentinel, "_fetch_sentinel_challenge", return_value={
+                    "token": "challenge", "so": {"required": True}
+                }), \
                 patch.object(sentinel, "_run_quickjs_action", side_effect=run_action):
             result = sentinel.get_sentinel_token_via_quickjs(
                 object(), "device", timeout_ms=10000, log=lambda _: None,
@@ -69,6 +71,35 @@ class SentinelQuickJsTests(unittest.TestCase):
 
         self.assertEqual(result, ("main", "observer"))
         self.assertEqual(calls["solve"], 2)
+
+    def test_accepts_missing_so_when_not_required(self):
+        sdk_file = Path("/private/tmp/gpt-register-sentinel-test-no-so/sdk.js")
+        sdk_file.parent.mkdir(parents=True, exist_ok=True)
+        sdk_file.write_text("sdk", encoding="utf-8")
+        calls = {"solve": 0}
+
+        def run_action(*, action, **kwargs):
+            if action == "requirements":
+                return {"request_p": "request"}
+            calls["solve"] += 1
+            return {"token": "main", "so_token": ""}
+
+        with patch.dict(os.environ, {
+            "OPENAI_SENTINEL_RETRY_COUNT": "1",
+            "OPENAI_SENTINEL_AUTO_DISCOVER": "0",
+            "OPENAI_SENTINEL_CACHE_DIR": "/private/tmp/gpt-register-sentinel-test-no-so",
+        }), patch.object(sentinel, "_ensure_sdk_file", return_value=sdk_file), \
+                patch.object(sentinel, "_fetch_sentinel_challenge", return_value={
+                    "token": "challenge", "so": {"required": False}
+                }), \
+                patch.object(sentinel, "_run_quickjs_action", side_effect=run_action):
+            result = sentinel.get_sentinel_token_via_quickjs(
+                object(), "device", timeout_ms=10000, log=lambda _: None,
+            )
+
+        # Server did not require SO -> succeed with an empty SO token, no retries.
+        self.assertEqual(result, ("main", ""))
+        self.assertEqual(calls["solve"], 1)
 
     def test_transport_error_stops_replaying_same_proxy(self):
         calls = {"download": 0}

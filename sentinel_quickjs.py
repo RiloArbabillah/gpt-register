@@ -435,20 +435,35 @@ def get_sentinel_token_via_quickjs(
             )
             sdk_token = str(solved.get("token") or "").strip()
             so_token_raw = str(solved.get("so_token") or "").strip()
-            if sdk_token and so_token_raw:
-                _last_failure_detail = ""
-                _last_failure_at = None
-                log(f"Sentinel QuickJS OK (version={version}, attempt={attempt}, len={len(sdk_token)}, so=Y)")
-                return (sdk_token, so_token_raw)
-            reason = "so_token_missing" if sdk_token else "sdk_token_missing"
-            so_error = str(solved.get("so_error") or "").strip()
-            detail = f" detail={so_error}" if so_error else ""
-            last_error = f"phase=quickjs_solve reason={reason}{detail}"
-            log(f"Sentinel QuickJS retryable failure: {reason}{detail} version={version} attempt={attempt}/{retry_count + 1}")
-            if reason == "so_token_missing":
+            if sdk_token:
+                so_required = bool((challenge.get("so") or {}).get("required"))
+                if so_token_raw:
+                    _last_failure_detail = ""
+                    _last_failure_at = None
+                    log(f"Sentinel QuickJS OK (version={version}, attempt={attempt}, len={len(sdk_token)}, so=Y)")
+                    return (sdk_token, so_token_raw)
+                if not so_required:
+                    # The server did not request a session-observer token for
+                    # this flow (challenge has no so.required), so a real
+                    # browser would proceed without the SO header as well.
+                    _last_failure_detail = ""
+                    _last_failure_at = None
+                    log(f"Sentinel QuickJS OK (version={version}, attempt={attempt}, len={len(sdk_token)}, so=not-required)")
+                    return (sdk_token, "")
+                reason = "so_token_missing"
+                so_error = str(solved.get("so_error") or "").strip()
+                detail = f" detail={so_error}" if so_error else ""
+                last_error = f"phase=quickjs_solve reason={reason}{detail}"
+                log(f"Sentinel QuickJS retryable failure: {reason}{detail} version={version} attempt={attempt}/{retry_count + 1}")
                 sdk_file.unlink(missing_ok=True)
                 if _sdk_file_cache == sdk_file:
                     _sdk_file_cache = None
+            else:
+                reason = "sdk_token_missing"
+                so_error = str(solved.get("so_error") or "").strip()
+                detail = f" detail={so_error}" if so_error else ""
+                last_error = f"phase=quickjs_solve reason={reason}{detail}"
+                log(f"Sentinel QuickJS retryable failure: {reason}{detail} version={version} attempt={attempt}/{retry_count + 1}")
         except Exception as exc:
             last_error = _format_phase_error(phase, exc, endpoint)
             log(f"{last_error} attempt={attempt}/{retry_count + 1}")

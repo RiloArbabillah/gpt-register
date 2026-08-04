@@ -38,11 +38,16 @@ _CACHE_SECONDS = max(60, _env_int("PROXY_CACHE_SECONDS", 300))
 # A proxy returned within this many seconds is skipped so the same IP is not
 # reused too often. 0 disables the cooldown (legacy behavior).
 _PROXY_REUSE_COOLDOWN_SECONDS = max(0, _env_int("PROXY_REUSE_COOLDOWN_SECONDS", 600))
+# Maximum number of times a proxy may be handed out within the rate-limit
+# window before it is skipped (per-IP registration rate limit).
+_PROXY_MAX_USES_PER_WINDOW = max(1, _env_int("PROXY_MAX_USES_PER_WINDOW", 2))
+# Sliding window (seconds) for the per-IP use count.
+_PROXY_RATE_LIMIT_WINDOW_SECONDS = max(60, _env_int("PROXY_RATE_LIMIT_WINDOW_SECONDS", 1800))
 _lock = threading.Lock()
 _proxies: list[str] = []
 _expires_at = 0.0
 _next_index = 0
-_last_used_at: dict[str, float] = {}
+_use_history: dict[str, list[float]] = {}
 _PROBE_URL = "https://chatgpt.com/api/auth/csrf"
 _PROBE_SAMPLE_SIZE = 12
 _FAST_PROXY_POOL_SIZE = 5
@@ -155,11 +160,21 @@ def _select_fast_proxies(proxies: list[str]) -> list[str]:
     return [proxy for proxy, _ in selected]
 
 
-def _pick_proxy_locked(now: float) -> str:
-    """Return the next proxy, skipping any used within the cooldown window.
+def _record_use_locked(proxy: str, now: float) -> None:
+    """Record a proxy use, keeping only timestamps inside the rate-limit window."""
+    history = [t for t in _use_history.get(proxy, []) if now - t < _PROXY_RATE_LIMIT_WINDOW_SECONDS]
+    history.append(now)
+    _use_history[proxy] = history
 
-    Falls back to the least-recently-used proxy when every pool member is still
-    inside the cooldown, so a busy loop does not hard-fail on proxy exhaustion.
+
+def _pick_proxy_locked(now: float) -> str:
+    """Return the next proxy, skipping IPs that are over the per-IP rate limit.
+
+    A proxy is eligible when it has not been used more than
+    ``_PROXY_MAX_USES_PER_WINDOW`` times inside the sliding window and its last
+    use is outside the reuse cooldown. If no proxy is eligible, fall back to the
+    least-recently-used one (cooldown first, then rate limit) so a busy loop
+    does not hard-fail on proxy exhaustion.
     """
     global _next_index
     if not _proxies:
@@ -167,20 +182,39 @@ def _pick_proxy_locked(now: float) -> str:
     pool_size = len(_proxies)
     start = _next_index % pool_size
     _next_index = start + 1
-    fallback = ""
-    fallback_age = -1.0
+    cooldown_fallback = ""
+    cooldown_fallback_age = -1.0
+    limit_fallback = ""
+    limit_fallback_age = -1.0
     for offset in range(pool_size):
         candidate = _proxies[(start + offset) % pool_size]
-        last = _last_used_at.get(candidate, 0.0)
+        history = [t for t in _use_history.get(candidate, []) if now - t < _PROXY_RATE_LIMIT_WINDOW_SECONDS]
+        _use_history[candidate] = history
+        last = history[-1] if history else 0.0
         age = now - last
-        if last == 0.0 or age >= _PROXY_REUSE_COOLDOWN_SECONDS:
-            _last_used_at[candidate] = now
+        uses = len(history)
+        within_limit = uses < _PROXY_MAX_USES_PER_WINDOW
+        if within_limit and (last == 0.0 or age >= _PROXY_REUSE_COOLDOWN_SECONDS):
+            _record_use_locked(candidate, now)
             return candidate
-        if age > fallback_age:
-            fallback, fallback_age = candidate, age
-    if fallback:
-        _last_used_at[fallback] = now
-        return fallback
+        if within_limit and age > cooldown_fallback_age:
+            cooldown_fallback, cooldown_fallback_age = candidate, age
+        if age > limit_fallback_age:
+            limit_fallback, limit_fallback_age = candidate, age
+    if cooldown_fallback:
+        logger.warning(
+            "[proxy] all pool members are still in cooldown; reusing the least-recently-used proxy %s",
+            cooldown_fallback,
+        )
+        _record_use_locked(cooldown_fallback, now)
+        return cooldown_fallback
+    if limit_fallback:
+        logger.warning(
+            "[proxy] per-IP rate limit reached for every pool member; reusing the least-recently-used proxy %s",
+            limit_fallback,
+        )
+        _record_use_locked(limit_fallback, now)
+        return limit_fallback
     return ""
 
 
@@ -211,9 +245,9 @@ def get_default_proxy() -> str:
                 _expires_at = now + _CACHE_SECONDS
                 _next_index = 0
                 # Drop usage history for proxies that are no longer in the pool.
-                for proxy in list(_last_used_at):
+                for proxy in list(_use_history):
                     if proxy not in _proxies:
-                        _last_used_at.pop(proxy, None)
+                        _use_history.pop(proxy, None)
                 logger.info("[proxy] loaded %d Proxyscrape proxies", len(_proxies))
             elif _proxies:
                 # A failed refresh should not hard-stop registration while a

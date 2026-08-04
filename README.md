@@ -147,6 +147,8 @@ node --version
 | Variable | Default | Description |
 |---|---:|---|
 | `PROXY` | — | Outbound proxy URL, for example `socks5://user:pass@host:port`. |
+| `PROXY_CACHE_SECONDS` | `300` | How long one downloaded Proxyscrape proxy pool is reused before a refresh. |
+| `PROXY_REUSE_COOLDOWN_SECONDS` | `600` | Minimum seconds before a Proxyscrape proxy may be picked again; recently used IPs are skipped. |
 | `OTP_TIMEOUT` | `60` | OTP wait time in seconds; effective minimum is 30. |
 | `WEBUI_ALLOW_LOGIN` | `0` | Set to `1` to use OTP login when an email is already registered. |
 | `SKIP_OAUTH_TOKEN_EXCHANGE` | `0` | Set to `1` to skip OAuth refresh-token exchange. |

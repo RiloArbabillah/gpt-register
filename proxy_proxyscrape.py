@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import json
+import os
+import random
 import re
 import threading
 import time
@@ -22,11 +24,25 @@ _PROXY_PATTERN = re.compile(
     r"(?:https?://)?((?:\d{1,3}\.){3}\d{1,3}):(\d{2,5})",
     re.IGNORECASE,
 )
-_CACHE_SECONDS = 60
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+# How long one downloaded+probed proxy pool is reused before a refresh.
+_CACHE_SECONDS = max(60, _env_int("PROXY_CACHE_SECONDS", 300))
+# A proxy returned within this many seconds is skipped so the same IP is not
+# reused too often. 0 disables the cooldown (legacy behavior).
+_PROXY_REUSE_COOLDOWN_SECONDS = max(0, _env_int("PROXY_REUSE_COOLDOWN_SECONDS", 600))
 _lock = threading.Lock()
 _proxies: list[str] = []
 _expires_at = 0.0
 _next_index = 0
+_last_used_at: dict[str, float] = {}
 _PROBE_URL = "https://chatgpt.com/api/auth/csrf"
 _PROBE_SAMPLE_SIZE = 12
 _FAST_PROXY_POOL_SIZE = 5
@@ -139,16 +155,48 @@ def _select_fast_proxies(proxies: list[str]) -> list[str]:
     return [proxy for proxy, _ in selected]
 
 
+def _pick_proxy_locked(now: float) -> str:
+    """Return the next proxy, skipping any used within the cooldown window.
+
+    Falls back to the least-recently-used proxy when every pool member is still
+    inside the cooldown, so a busy loop does not hard-fail on proxy exhaustion.
+    """
+    global _next_index
+    if not _proxies:
+        return ""
+    pool_size = len(_proxies)
+    start = _next_index % pool_size
+    _next_index = start + 1
+    fallback = ""
+    fallback_age = -1.0
+    for offset in range(pool_size):
+        candidate = _proxies[(start + offset) % pool_size]
+        last = _last_used_at.get(candidate, 0.0)
+        age = now - last
+        if last == 0.0 or age >= _PROXY_REUSE_COOLDOWN_SECONDS:
+            _last_used_at[candidate] = now
+            return candidate
+        if age > fallback_age:
+            fallback, fallback_age = candidate, age
+    if fallback:
+        _last_used_at[fallback] = now
+        return fallback
+    return ""
+
+
 def get_default_proxy() -> str:
     """Return a rotating HTTPS-capable HTTP CONNECT or SOCKS5 proxy.
 
-    The source is cached briefly. An empty result signals that registration must
-    stop unless the caller explicitly selected direct connection.
+    The pool is cached and shuffled on refresh, and recently returned proxies are
+    skipped for a cooldown period so the same IP is not reused too often. An
+    empty result signals that registration must stop unless the caller
+    explicitly selected direct connection.
     """
     global _proxies, _expires_at, _next_index
     with _lock:
         now = time.monotonic()
         if now >= _expires_at:
+            fresh: list[str] = []
             try:
                 http_proxies = _download("http")
                 socks5_proxies = _download("socks5")
@@ -157,15 +205,26 @@ def get_default_proxy() -> str:
                 )
             except Exception as exc:
                 logger.warning("[proxy] Proxyscrape download failed: %s", exc)
-                return ""
-            if not fresh:
+            if fresh:
+                random.shuffle(fresh)
+                _proxies = fresh
+                _expires_at = now + _CACHE_SECONDS
+                _next_index = 0
+                # Drop usage history for proxies that are no longer in the pool.
+                for proxy in list(_last_used_at):
+                    if proxy not in _proxies:
+                        _last_used_at.pop(proxy, None)
+                logger.info("[proxy] loaded %d Proxyscrape proxies", len(_proxies))
+            elif _proxies:
+                # A failed refresh should not hard-stop registration while a
+                # known pool is still available; keep serving it for a minute.
+                _expires_at = now + 60
+                logger.warning(
+                    "[proxy] Proxyscrape refresh failed; reusing %d cached proxies",
+                    len(_proxies),
+                )
+            else:
                 logger.warning("[proxy] Proxyscrape returned no usable HTTP CONNECT or SOCKS5 proxies")
                 return ""
-            _proxies = fresh
-            _expires_at = now + _CACHE_SECONDS
-            _next_index = 0
-            logger.info("[proxy] loaded %d Proxyscrape proxies", len(_proxies))
 
-        proxy = _proxies[_next_index % len(_proxies)]
-        _next_index += 1
-        return proxy
+        return _pick_proxy_locked(time.monotonic())

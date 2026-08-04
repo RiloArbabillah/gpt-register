@@ -220,7 +220,7 @@ class AutoLoopController:
         return self._options.get("proxy", "") or ""
 
     def _rotate_proxy_for_worker(self, worker_id: int) -> str:
-        """Move a worker to the next configured proxy after a network failure."""
+        """Move a worker to the next configured proxy after a failed run."""
         if not self._proxy_pool:
             return self._proxy_for_worker(worker_id)
         self._proxy_offsets[worker_id] = self._proxy_offsets.get(worker_id, 0) + 1
@@ -412,17 +412,19 @@ class AutoLoopController:
             with self._lock:
                 self._worker_status.pop(worker_id, None)
             self._record_finish(ok, category)
-            if (not ok) and category in {"network", "sentinel_so_token_missing"}:
+            # Rotate on risk-control rejections (e.g. HTTP 409 -> "unknown") too,
+            # not only on transport failures, so a flagged IP is not reused.
+            if (not ok) and category in {"network", "sentinel_so_token_missing", "unknown"}:
                 previous_proxy = proxy
                 proxy = self._rotate_proxy_for_worker(worker_id)
                 if proxy != previous_proxy:
                     logger.warning(
-                        f"[worker-{worker_id}] network failure; rotating proxy "
+                        f"[worker-{worker_id}] failure ({category}); rotating proxy "
                         f"from {previous_proxy or 'automatic'} to {proxy or 'automatic'}"
                     )
                 elif previous_proxy:
                     logger.warning(
-                        f"[worker-{worker_id}] network failure; no alternate proxy is configured"
+                        f"[worker-{worker_id}] failure ({category}); no alternate proxy is configured"
                     )
             self._broadcast("state", self._snapshot())
             self._broadcast("run_finished", {

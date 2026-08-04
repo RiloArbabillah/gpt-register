@@ -779,7 +779,7 @@ class AuthFlow:
         password = (self.result.password or "").strip() or self._default_password_from_email(email)
         self.result.password = password
 
-        device_id = (self.result.device_id or "").strip() or (self.session.cookies.get("oai-did", "") or "").strip()
+        device_id = (self.result.device_id or "").strip() or self._get_cookie_value_by_name("oai-did")
         if not device_id:
             device_id = str(uuid.uuid4())
             self.result.device_id = device_id
@@ -840,7 +840,7 @@ class AuthFlow:
         headers["Accept"] = "application/json"
         headers["Content-Type"] = "application/json"
         headers["Origin"] = "https://auth.openai.com"
-        device_id = (self.result.device_id or "").strip() or (self.session.cookies.get("oai-did", "") or "").strip()
+        device_id = (self.result.device_id or "").strip() or self._get_cookie_value_by_name("oai-did")
         if device_id:
             headers["oai-device-id"] = device_id
         return headers
@@ -1514,7 +1514,7 @@ class AuthFlow:
         except Exception:
             host = ""
         if "auth.openai.com" in host:
-            device_id = (self.result.device_id or "").strip() or (self.session.cookies.get("oai-did", "") or "").strip()
+            device_id = (self.result.device_id or "").strip() or self._get_cookie_value_by_name("oai-did")
             if device_id:
                 headers["oai-device-id"] = device_id
 
@@ -1675,13 +1675,13 @@ class AuthFlow:
                     device_id = cookie.value
                     break
             elif isinstance(cookie, str) and cookie == "oai-did":
-                device_id = self.session.cookies.get("oai-did", "")
+                device_id = self._get_cookie_value_by_name("oai-did")
                 break
 
         # curl_cffi cookies 访问方式
         if not device_id:
             try:
-                device_id = self.session.cookies.get("oai-did", "")
+                device_id = self._get_cookie_value_by_name("oai-did")
             except Exception:
                 pass
 

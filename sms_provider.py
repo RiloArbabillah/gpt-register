@@ -148,6 +148,7 @@ SMS_PHONE_LIFETIME = 20 * 60  # 号码租用窗口（秒）
 _SMS_CACHE_LOCK = threading.Lock()
 _SMS_VERIFY_LOCK = threading.RLock()
 _SMS_CACHE: Optional[dict] = None  # 跨线程共享的号码复用缓存
+_FIVESIM_CACHE: Optional[dict] = None
 
 # OpenAI 走纯 SMS 的国家白名单（截至 2025-2026 实测；其它国家会抽到 WhatsApp 号）
 OPENAI_SMS_COUNTRIES = {"52"}  # Thailand only
@@ -188,6 +189,10 @@ def _project_cache_dir() -> Path:
 
 def _smsbower_cache_file() -> Path:
     return _project_cache_dir() / ".smsbower_phone_cache.json"
+
+
+def _fivesim_cache_file() -> Path:
+    return _project_cache_dir() / ".5sim_phone_cache.json"
 
 
 def _parse_sms_status_text(text: str) -> dict:
@@ -805,6 +810,342 @@ class SmsBowerProvider(BaseSmsProvider):
         self._resend_callback = callback
 
 
+class FiveSimProvider(BaseSmsProvider):
+    """5sim activation provider with the same reusable-number lifecycle."""
+
+    DEFAULT_BASE_URL = "https://5sim.net/v1"
+    DEFAULT_PRODUCT = "openai"
+    DEFAULT_COUNTRY = "thailand"
+    HARD_LIFETIME = 20 * 60
+    COUNTRY_CODES = (
+        "thailand", "indonesia", "vietnam", "malaysia", "philippines", "india",
+        "usa", "canada", "mexico", "brazil", "argentina", "uk", "germany",
+        "france", "italy", "spain", "poland", "netherlands", "turkey", "ukraine",
+        "russia", "kazakhstan", "japan", "korea", "hongkong", "taiwan", "australia",
+        "newzealand", "southafrica", "israel", "romania", "czech", "sweden", "norway",
+    )
+    auto_report_success_on_code = False
+
+    def __init__(self, api_key: str, *, base_url: str = "", default_service: str = DEFAULT_PRODUCT,
+                 default_country: str = DEFAULT_COUNTRY, max_price: float = -1,
+                 proxy: Optional[str] = None, reuse_phone_to_max: bool = True,
+                 phone_success_max: int = 3):
+        self.api_key = str(api_key or "").strip()
+        self.base_url = (str(base_url or "").strip() or self.DEFAULT_BASE_URL).rstrip("/")
+        self.default_service = str(default_service or self.DEFAULT_PRODUCT).strip() or self.DEFAULT_PRODUCT
+        self.default_country = str(default_country or self.DEFAULT_COUNTRY).strip() or self.DEFAULT_COUNTRY
+        self.max_price = float(max_price or -1)
+        self._proxy = (proxy or "").strip() or None
+        self._proxies = {"http": self._proxy, "https": self._proxy} if self._proxy else None
+        self.reuse_phone_to_max = bool(reuse_phone_to_max)
+        self.phone_success_max = max(0, int(phone_success_max or 0))
+        self.last_code_result: Optional[dict] = None
+        self.current_activation: Optional[SmsActivation] = None
+        self._resend_callback: Optional[Callable[[], None]] = None
+
+    def _request(self, path: str, *, params: Optional[dict] = None, timeout: int = 30) -> requests.Response:
+        response = requests.get(
+            f"{self.base_url}/{path.lstrip('/')}",
+            headers={"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"},
+            params=params or {}, timeout=timeout, proxies=self._proxies,
+        )
+        response.raise_for_status()
+        return response
+
+    def _cache_identity(self, service: str, country: str) -> dict:
+        return {"provider": "5sim", "api_key_hash": _hash_secret(self.api_key),
+                "service": str(service), "country": str(country)}
+
+    def _load_cache(self, service: str, country: str) -> Optional[dict]:
+        global _FIVESIM_CACHE
+        cache = _FIVESIM_CACHE
+        if cache is None:
+            path = _fivesim_cache_file()
+            if not path.exists():
+                return None
+            try:
+                cache = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                return None
+        identity = self._cache_identity(service, country)
+        if any(str(cache.get(k) or "") != str(v) for k, v in identity.items()):
+            return None
+        if cache.get("reuse_stopped") or time.time() >= float(cache.get("expires_at") or 0):
+            self._clear_cache()
+            return None
+        if self.phone_success_max > 0 and int(cache.get("use_count") or 0) >= self.phone_success_max:
+            self._clear_cache()
+            return None
+        cache["used_codes"] = set(cache.get("used_codes") or [])
+        _FIVESIM_CACHE = cache
+        return cache
+
+    def _save_cache(self, cache: Optional[dict]) -> None:
+        global _FIVESIM_CACHE
+        _FIVESIM_CACHE = cache
+        path = _fivesim_cache_file()
+        if cache is None:
+            path.unlink(missing_ok=True)
+            return
+        serializable = dict(cache)
+        serializable["used_codes"] = sorted(serializable.get("used_codes") or [])
+        path.write_text(json.dumps(serializable, ensure_ascii=False), encoding="utf-8")
+
+    def _clear_cache(self) -> None:
+        self._save_cache(None)
+
+    def get_balance(self) -> float:
+        data = self._request("user/profile").json()
+        try:
+            return float(data.get("balance"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise RuntimeError("5sim profile response did not contain a valid balance") from exc
+
+    def get_top_countries(self, service: Optional[str] = None) -> list[dict]:
+        product = str(service or self.default_service or self.DEFAULT_PRODUCT).strip()
+        # 5sim exposes products per country; use the configured country first and
+        # keep the response shape compatible with the existing settings endpoint.
+        countries = [self.default_country]
+        rows: list[dict] = []
+        for country in countries:
+            try:
+                data = self._request(f"guest/products/{country}/any").json()
+            except Exception:
+                continue
+            products = data.get(product) if isinstance(data, dict) else None
+            if isinstance(products, dict):
+                products = [products]
+            if not isinstance(products, list) and isinstance(data, list):
+                products = data
+            for item in products or []:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("Category") or item.get("category") or item.get("product") or "")
+                if isinstance(data, list) and name and product.lower() not in name.lower() and "chatgpt" not in name.lower():
+                    continue
+                rows.append({"country": country, "price": item.get("Price", item.get("price")),
+                             "count": item.get("Qty", item.get("qty", item.get("count", 0)))})
+        return rows
+
+    def get_best_country(self, service: Optional[str] = None, **kwargs) -> Optional[str]:
+        rows = self.get_top_countries(service=service)
+        return str(rows[0].get("country")) if rows else self.default_country
+
+    def get_country_options(self) -> list[dict]:
+        return [{"country": code, "price": None, "count": None} for code in self.COUNTRY_CODES]
+
+    @staticmethod
+    def _phone(value) -> str:
+        raw = str(value or "").strip()
+        return raw if raw.startswith("+") else f"+{raw}"
+
+    def get_number(self, *, service: str, country: str = "",
+                   country_candidates: Optional[list[str]] = None) -> SmsActivation:
+        product = str(service or self.default_service or self.DEFAULT_PRODUCT).strip() or self.DEFAULT_PRODUCT
+        candidates = [str(c).strip() for c in (country_candidates or [country or self.default_country]) if str(c).strip()]
+        if not candidates:
+            candidates = [self.default_country]
+        with _SMS_VERIFY_LOCK:
+            with _SMS_CACHE_LOCK:
+                cache = self._load_cache(product, candidates[0])
+                if cache and str(cache.get("country")) in candidates:
+                    try:
+                        status = self.get_status(str(cache["activation_id"]))
+                        if status.get("status") == "cancel":
+                            self._clear_cache()
+                            cache = None
+                    except Exception:
+                        # A transient status failure must not discard a still-valid
+                        # cached order; the hard local expiry remains authoritative.
+                        pass
+                if cache and str(cache.get("country")) in candidates:
+                    activation = SmsActivation(str(cache["activation_id"]), str(cache["phone_number"]),
+                                                str(cache.get("country") or candidates[0]),
+                                                {"reused": True, "use_count": int(cache.get("use_count") or 0),
+                                                 "expires_at": cache.get("expires_at"),
+                                                 "price": cache.get("price")})
+                    self.current_activation = activation
+                    return activation
+                failures = []
+                for cid in candidates:
+                    params = {"reuse": 1}
+                    if self.max_price > 0:
+                        params["maxPrice"] = self.max_price
+                    try:
+                        data = self._request(f"user/buy/activation/{cid}/any/{product}", params=params).json()
+                        aid = str(data.get("id") or "")
+                        phone = self._phone(data.get("phone"))
+                        price = data.get("price")
+                        if not aid or phone == "+":
+                            raise RuntimeError("5sim returned an incomplete activation")
+                        acquired = time.time()
+                        expires_at = acquired + self.HARD_LIFETIME
+                        cache = {**self._cache_identity(product, cid), "activation_id": aid,
+                                 "phone_number": phone, "acquired_at": acquired,
+                                 "expires_at": expires_at, "api_expires": data.get("expires"),
+                                 "price": price,
+                                 "use_count": 0, "used_codes": set(), "reuse_stopped": False,
+                                 "stop_reason": ""}
+                        self._save_cache(cache)
+                        activation = SmsActivation(aid, phone, cid,
+                                                   {"reused": False, "expires_at": expires_at,
+                                                    "api_expires": data.get("expires"), "price": price})
+                        self.current_activation = activation
+                        logger.info(
+                            "5sim rented number phone=%s country=%s product=%s price=%s order_id=%s max_price=%s",
+                            phone, cid, product, price if price is not None else "unknown", aid,
+                            self.max_price if self.max_price > 0 else "unlimited",
+                        )
+                        return activation
+                    except Exception as exc:
+                        failures.append(f"{cid}: {str(exc)[:120]}")
+                raise RuntimeError(f"5sim failed for all candidate countries: {' | '.join(failures)}")
+
+    def get_status(self, activation_id: str) -> dict:
+        data = self._request(f"user/check/{activation_id}").json()
+        status = str(data.get("status") or "").upper() if isinstance(data, dict) else ""
+        if status == "RECEIVED":
+            for sms in data.get("sms") or []:
+                if not isinstance(sms, dict):
+                    continue
+                code = str(sms.get("code") or "").strip()
+                if code:
+                    return {"status": "ok", "code": code, "sms_key": hashlib.sha256(
+                        f"{activation_id}:{code}".encode("utf-8")).hexdigest()}
+            return {"status": "wait_code"}
+        if status in {"CANCELED", "TIMEOUT", "BANNED", "FINISHED"}:
+            return {"status": "cancel", "provider_status": status}
+        return {"status": "wait_code", "provider_status": status}
+
+    def get_code(self, activation_id: str, *, timeout: int = 180) -> str:
+        with _SMS_CACHE_LOCK:
+            cache = _FIVESIM_CACHE or {}
+            expires_at = float(cache.get("expires_at") or (time.time() + self.HARD_LIFETIME))
+        deadline = min(time.time() + max(0, int(timeout)), expires_at)
+        used_codes = set(cache.get("used_codes") or [])
+        while time.time() < deadline:
+            try:
+                result = self.get_status(activation_id)
+                if result.get("status") == "ok" and result.get("code") not in used_codes:
+                    self.last_code_result = result
+                    return str(result["code"])
+                if result.get("status") == "cancel":
+                    break
+            except Exception as exc:
+                logger.debug("5sim status check failed: %s", exc)
+            time.sleep(3)
+        self.last_code_result = None
+        return ""
+
+    def cancel(self, activation_id: str) -> bool:
+        ok = False
+        try:
+            response = self._request(f"user/cancel/{activation_id}")
+            ok = response.status_code in (200, 204)
+        except Exception:
+            pass
+        with _SMS_CACHE_LOCK:
+            if (_FIVESIM_CACHE or {}).get("activation_id") == str(activation_id):
+                self._clear_cache()
+        return ok
+
+    def reuse_number(self, product: str, phone_number: str) -> dict:
+        """Create the next activation for an eligible existing number."""
+        number = str(phone_number or "").strip().lstrip("+")
+        if not number:
+            raise RuntimeError("5sim reuse requires a phone number")
+        data = self._request(f"user/reuse/{product}/{number}").json()
+        if not isinstance(data, dict) or not data.get("id"):
+            raise RuntimeError("5sim reuse returned an incomplete activation")
+        return data
+
+    def _finish_order(self, activation_id: str) -> bool:
+        try:
+            response = self._request(f"user/finish/{activation_id}")
+            return response.status_code in (200, 204)
+        except Exception as exc:
+            logger.warning("5sim finish failed order_id=%s error=%s", activation_id, str(exc)[:160])
+            return False
+
+    def report_success(self, activation_id: str) -> bool:
+        should_finish = False
+        reuse_context: Optional[tuple[str, str, str]] = None
+        with _SMS_CACHE_LOCK:
+            cache = _FIVESIM_CACHE
+            if cache and str(cache.get("activation_id")) == str(activation_id):
+                cache["use_count"] = int(cache.get("use_count") or 0) + 1
+                if self.last_code_result and self.last_code_result.get("code"):
+                    cache.setdefault("used_codes", set()).add(self.last_code_result["code"])
+                remaining = float(cache.get("expires_at") or 0) - time.time()
+                should_finish = (not self.reuse_phone_to_max or
+                                 (self.phone_success_max > 0 and cache["use_count"] >= self.phone_success_max) or
+                                 remaining <= 30)
+                if should_finish:
+                    cache["reuse_stopped"] = True
+                    self._save_cache(None)
+                else:
+                    reuse_context = (
+                        str(cache.get("service") or self.default_service),
+                        str(cache.get("phone_number") or ""),
+                        str(cache.get("activation_id") or activation_id),
+                    )
+        if should_finish:
+            return self._finish_order(activation_id)
+        if not reuse_context:
+            return True
+
+        product, phone, old_activation_id = reuse_context
+        try:
+            data = self.reuse_number(product, phone)
+            new_activation_id = str(data.get("id") or "")
+            new_phone = self._phone(data.get("phone") or phone)
+            with _SMS_CACHE_LOCK:
+                cache = _FIVESIM_CACHE
+                if cache and str(cache.get("activation_id")) == old_activation_id:
+                    cache["activation_id"] = new_activation_id
+                    cache["phone_number"] = new_phone
+                    cache["api_expires"] = data.get("expires")
+                    if data.get("price") is not None:
+                        cache["price"] = data.get("price")
+                    self._save_cache(cache)
+            logger.info(
+                "5sim reused number phone=%s product=%s old_order_id=%s new_order_id=%s use_count=%s/%s",
+                new_phone, product, old_activation_id, new_activation_id,
+                cache.get("use_count") if cache else "unknown", self.phone_success_max or "unlimited",
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "5sim reuse unavailable phone=%s product=%s order_id=%s error=%s; next account will rent a new number",
+                phone, product, old_activation_id, str(exc)[:160],
+            )
+            with _SMS_CACHE_LOCK:
+                cache = _FIVESIM_CACHE
+                if cache and str(cache.get("activation_id")) == old_activation_id:
+                    cache["reuse_stopped"] = True
+                    cache["stop_reason"] = str(exc)[:200]
+                    self._save_cache(None)
+            self._finish_order(old_activation_id)
+            return False
+        return True
+
+    def mark_code_failed(self, activation_id: str, reason: str = "") -> None:
+        if self._resend_callback:
+            try:
+                self._resend_callback()
+            except Exception:
+                pass
+
+    def mark_send_succeeded(self, activation_id: str) -> None:
+        return None
+
+    def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
+        self.cancel(activation_id)
+
+    def set_resend_callback(self, callback: Optional[Callable[[], None]]) -> None:
+        self._resend_callback = callback
+
+
 
 # ---------------------------------------------------------------------------
 # 工厂 + 回调控制器（注入到 auth_flow）
@@ -814,7 +1155,7 @@ class SmsBowerProvider(BaseSmsProvider):
 def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
     """从配置创建 provider 实例。
 
-    provider_key: smsbower / herosms
+    provider_key: smsbower / herosms / 5sim
     config 字段：sms_api_key / sms_country / sms_service / sms_max_price /
                 sms_reuse_phone / sms_phone_success_max
     """
@@ -823,7 +1164,12 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
     if not api_key:
         raise RuntimeError(f"{pk} API key is not configured")
     country = str(config.get("sms_country") or "").strip()
-    service = str(config.get("sms_service") or "").strip() or "dr"
+    service = str(config.get("sms_service") or "").strip() or ("openai" if pk in ("5sim", "fivesim") else "dr")
+    if pk in ("5sim", "fivesim"):
+        if not service or service.lower() == "dr":
+            service = "openai"
+        if not country or country.isdigit():
+            country = FiveSimProvider.DEFAULT_COUNTRY
     # 接码 API 请求走的代理：复用全局 proxy（registrar 注入注册流程的代理），
     # 也允许调用方显式传 sms_proxy 覆盖（保留扩展点，目前 WebUI 不暴露）。
     proxy = (str(config.get("sms_proxy") or config.get("proxy") or "")).strip() or None
@@ -848,6 +1194,14 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
                                 proxy=proxy,
                                 reuse_phone_to_max=reuse,
                                 phone_success_max=succ_max)
+    if pk in ("5sim", "fivesim"):
+        return FiveSimProvider(api_key=api_key,
+                               default_service=service or "openai",
+                               default_country=country or FiveSimProvider.DEFAULT_COUNTRY,
+                               max_price=max_price,
+                               proxy=proxy,
+                               reuse_phone_to_max=reuse,
+                               phone_success_max=succ_max)
     raise RuntimeError(f"Unknown SMS provider: {provider_key}")
 
 
@@ -895,7 +1249,7 @@ class PhoneCallbackController:
         """阶段 1：租手机号（已带 +）。"""
         provider = self._provider()
         # 同号复用锁（SmsBower 系列才用，防止两个注册任务并发抢同一个 cache）
-        if isinstance(provider, SmsBowerProvider) and not self._verify_lock_acquired:
+        if isinstance(provider, (SmsBowerProvider, FiveSimProvider)) and not self._verify_lock_acquired:
             _SMS_VERIFY_LOCK.acquire()
             self._verify_lock_acquired = True
 
@@ -905,12 +1259,13 @@ class PhoneCallbackController:
 
         effective_country = self.country
         country_candidates: list[str] = []
+        service_for_provider = "openai" if isinstance(provider, FiveSimProvider) and str(self.service).lower() == "dr" else self.service
 
-        if self.auto_select_country and isinstance(provider, SmsBowerProvider):
+        if self.auto_select_country and isinstance(provider, (SmsBowerProvider, FiveSimProvider)):
             if allowed_list:
                 self.log(f"🔍 自动选号: 从主人勾选的 {len(allowed_list)} 个国家依次尝试（按价格升序）")
                 try:
-                    rows = provider.get_top_countries(service=self.service)
+                    rows = provider.get_top_countries(service=service_for_provider)
                     # 按价格升序排，只保留在 allowed_list 中的
                     in_allow = [r for r in rows if str(r.get("country") or "") in allowed_list]
                     ordered_allowed = [str(r["country"]) for r in in_allow]
@@ -926,13 +1281,13 @@ class PhoneCallbackController:
                 self.log("🔍 自动选号（未指定允许国家，按全平台价格+库存挑最优）...")
                 try:
                     best = provider.get_best_country(
-                        service=self.service,
+                        service=service_for_provider,
                         min_stock=_safe_int(self.config.get("sms_auto_min_stock"), 20),
                         max_price=_safe_float(self.config.get("sms_auto_max_price"), 0),
                         strict_whitelist=_safe_bool(self.config.get("sms_strict_whitelist"), False),
                     )
                     if best:
-                        name_cn = SMS_COUNTRY_NAMES_CN.get(best, "未知")
+                        name_cn = SMS_COUNTRY_NAMES_CN.get(best, best)
                         in_wl = best in OPENAI_SMS_COUNTRIES
                         wl_label = "✅ OpenAI SMS 白名单" if in_wl else "⚠️ 非白名单"
                         self.log(f"✅ 自动选择国家: {best} {name_cn}  [{wl_label}]")
@@ -947,16 +1302,22 @@ class PhoneCallbackController:
             # 没启用自动选号 → 强制用默认国家
             country_candidates = [self.country] if self.country else []
 
+        if isinstance(provider, FiveSimProvider):
+            # Existing SmsBower configurations use numeric IDs; 5sim expects
+            # its country slugs, so migrate numeric values to the default slug.
+            country_candidates = [provider.default_country if c.isdigit() else c for c in country_candidates]
+
         if not country_candidates:
             country_candidates = [SMS_DEFAULT_COUNTRY]
 
-        country_label_log = ",".join(
-            f"{c}({SMS_COUNTRY_NAMES_CN.get(c, '?')})" for c in country_candidates[:5]
-        )
+        country_label_log = ",".join(f"{c}({SMS_COUNTRY_NAMES_CN.get(c, c)})" for c in country_candidates[:5])
         self.log(f"📱 准备租号: provider={self.provider_key} service={self.service} 候选={country_label_log}{' ...' if len(country_candidates) > 5 else ''}")
         try:
+            effective_service = self.service
+            if isinstance(provider, FiveSimProvider) and str(effective_service).lower() == "dr":
+                effective_service = "openai"
             self.activation = provider.get_number(
-                service=self.service,
+                service=effective_service,
                 country=country_candidates[0],
                 country_candidates=country_candidates,
             )
@@ -967,8 +1328,10 @@ class PhoneCallbackController:
         reused = bool((self.activation.metadata or {}).get("reused"))
         used_country = self.activation.country or country_candidates[0]
         used_country_label = f"{used_country} {SMS_COUNTRY_NAMES_CN.get(used_country, '')}"
+        price = (self.activation.metadata or {}).get("price")
+        price_label = f" price={price}" if price is not None else ""
         self.log(f"✅ 已租到号码{'(复用)' if reused else ''}: {self.activation.phone_number} "
-                 f"国家={used_country_label} (activation_id={self.activation.activation_id})")
+                 f"国家={used_country_label}{price_label} (activation_id={self.activation.activation_id})")
         return self.activation.phone_number
 
     def get_code(self, timeout: int = 180) -> str:

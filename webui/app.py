@@ -578,10 +578,10 @@ def api_get_sms_config():
 
 class SaveSmsConfigReq(BaseModel):
     sms_enabled: Optional[str] = None              # "0" / "1"
-    sms_provider: Optional[str] = None             # smsbower / herosms
+    sms_provider: Optional[str] = None             # smsbower / herosms / 5sim
     sms_api_key: Optional[str] = None              # 传 '***' 表示不修改
-    sms_country: Optional[str] = None              # ID 或国家代码（'52' / 'th'）
-    sms_service: Optional[str] = None              # OpenAI = 'dr'
+    sms_country: Optional[str] = None              # ID 或 5sim country code
+    sms_service: Optional[str] = None              # OpenAI = 'dr' or 'openai'
     sms_max_price: Optional[str] = None
     sms_reuse_phone: Optional[str] = None
     sms_phone_success_max: Optional[str] = None
@@ -639,7 +639,8 @@ def api_sms_top_countries():
     from sms_provider import create_sms_provider, OPENAI_SMS_COUNTRIES, SMS_COUNTRY_NAMES_CN
     try:
         provider = create_sms_provider(cfg["sms_provider"], cfg)
-        rows = provider.get_top_countries(service=cfg.get("sms_service") or "dr")
+        service = "openai" if cfg["sms_provider"] == "5sim" else (cfg.get("sms_service") or "dr")
+        rows = provider.get_top_countries(service=service)
         for r in rows:
             cid = str(r.get("country"))
             r["openai_sms_safe"] = cid in OPENAI_SMS_COUNTRIES
@@ -666,7 +667,15 @@ def api_sms_all_countries(provider: str = ""):
     if cfg.get("sms_api_key"):
         try:
             p = create_sms_provider(cfg["sms_provider"], cfg)
-            rows = p.get_top_countries(service=cfg.get("sms_service") or "dr")
+            if cfg["sms_provider"] == "5sim" and hasattr(p, "get_country_options"):
+                countries = []
+                for r in p.get_country_options():
+                    cid = str(r.get("country") or "")
+                    countries.append({"id": cid, "name_cn": cid, "openai_sms_safe": False,
+                                      "price": r.get("price"), "count": r.get("count")})
+                return {"ok": True, "countries": countries, "openai_sms_safe": [], "source": "5sim"}
+            service = "openai" if cfg["sms_provider"] == "5sim" else (cfg.get("sms_service") or "dr")
+            rows = p.get_top_countries(service=service)
             countries = []
             for r in rows:
                 cid = str(r.get("country") or "")

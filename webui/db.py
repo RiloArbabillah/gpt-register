@@ -883,7 +883,7 @@ def get_sms_config() -> dict:
 def save_sms_config(data: dict) -> None:
     """保存 SMS 配置。sms_api_key 传 '***' 表示不修改。"""
     # 校验 provider
-    valid_providers = {"smsbower", "herosms"}
+    valid_providers = {"smsbower", "herosms", "5sim"}
     if "sms_provider" in data:
         p = str(data["sms_provider"]).strip().lower()
         if p not in valid_providers:

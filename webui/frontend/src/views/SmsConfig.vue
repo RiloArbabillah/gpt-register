@@ -54,8 +54,12 @@ async function load() {
     enabled.value = config.sms_enabled === '1'
     apiKey.value = ''
     apiKeyPh.value = config.sms_api_key === '***' ? '已设置（留空不修改）' : '粘贴接码平台 API Key'
-    country.value = config.sms_country || '150'
-    service.value = config.sms_service || 'dr'
+    country.value = provider.value === '5sim'
+      ? ((config.sms_country && !/^\d+$/.test(String(config.sms_country))) ? config.sms_country : 'thailand')
+      : (config.sms_country || '150')
+    service.value = provider.value === '5sim'
+      ? ((config.sms_service && config.sms_service !== 'dr') ? config.sms_service : 'openai')
+      : (config.sms_service || 'dr')
     maxPrice.value = config.sms_max_price || ''
     phoneSuccessMax.value = config.sms_phone_success_max || '3'
     reusePhone.value = config.sms_reuse_phone === '1'
@@ -70,6 +74,12 @@ async function load() {
 
 async function onProviderChange() {
   allowed.value = []
+  if (provider.value === '5sim') {
+    country.value = 'thailand'
+    service.value = 'openai'
+  } else if (service.value === 'openai') {
+    service.value = 'dr'
+  }
   await loadCountries(provider.value)
 }
 
@@ -81,7 +91,7 @@ async function save() {
       sms_provider: provider.value,
       sms_api_key: apiKey.value.trim() || '***',
       sms_country: String(country.value || '').trim() || '52',
-      sms_service: service.value.trim() || 'dr',
+      sms_service: service.value.trim() || (provider.value === '5sim' ? 'openai' : 'dr'),
       sms_max_price: maxPrice.value.trim(),
       sms_phone_success_max: phoneSuccessMax.value.trim() || '3',
       sms_reuse_phone: reusePhone.value ? '1' : '0',
@@ -123,6 +133,7 @@ onActivated(() => load())
           <el-radio-group v-model="provider" @change="onProviderChange">
             <el-radio value="smsbower">SmsBower（支持号码复用 + 立即取消退款）</el-radio>
             <el-radio value="herosms">HeroSMS（取消后 20 分钟自动退款）</el-radio>
+            <el-radio value="5sim">5sim（Bearer token，20 分钟租用上限）</el-radio>
           </el-radio-group>
         </el-form-item>
 
@@ -139,27 +150,27 @@ onActivated(() => load())
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="Service 代码（OpenAI = dr）">
-              <el-input v-model="service" placeholder="dr" />
+            <el-form-item :label="provider === '5sim' ? 'Product（OpenAI = openai）' : 'Service 代码（OpenAI = dr）'">
+              <el-input v-model="service" :placeholder="provider === '5sim' ? 'openai' : 'dr'" />
             </el-form-item>
           </el-col>
         </el-row>
 
         <el-row :gutter="16">
           <el-col :span="12">
-            <el-form-item label="号码最高单价（SmsBower；空=不限）">
+            <el-form-item label="号码最高单价（空=不限）">
               <el-input v-model="maxPrice" placeholder="0.5" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="同号成功复用上限（SmsBower，默认 3）">
+            <el-form-item label="同号成功复用上限（默认 3）">
               <el-input v-model="phoneSuccessMax" type="number" />
             </el-form-item>
           </el-col>
         </el-row>
 
         <el-form-item>
-          <el-checkbox v-model="reusePhone"><b>启用号码复用</b>（SmsBower：同号复用多次，省钱）</el-checkbox>
+          <el-checkbox v-model="reusePhone"><b>启用号码复用</b>（同号最多复用多次，5sim 硬上限 20 分钟）</el-checkbox>
         </el-form-item>
         <el-divider content-position="left">自动选择最优国家（按价格 + 库存）</el-divider>
         <el-form-item>
@@ -211,7 +222,7 @@ onActivated(() => load())
 
     <FooterToolbar>
       <template #left>
-        {{ locale.locale === 'en' ? 'SMS provider:' : '接码平台：' }} {{ provider === 'herosms' ? 'HeroSMS' : 'SmsBower' }}
+        {{ locale.locale === 'en' ? 'SMS provider:' : '接码平台：' }} {{ provider === 'herosms' ? 'HeroSMS' : (provider === '5sim' ? '5sim' : 'SmsBower') }}
         {{ allowed.length ? (locale.locale === 'en' ? ` · ${allowed.length} allowed countries` : ` · 允许国家 ${allowed.length} 个`) : '' }}
       </template>
       <el-button :loading="testing" @click="test">测试余额</el-button>

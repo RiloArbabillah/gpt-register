@@ -122,11 +122,20 @@ class ImapCatchAllProvider:
         email_addr: str,
         timeout: int = 120,
         issued_after: Optional[float] = None,
+        additional_targets: Optional[set[str] | list[str] | tuple[str, ...]] = None,
     ) -> str:
         deadline = time.time() + max(10, int(timeout))
-        threshold = (issued_after or time.time()) - 10
-        target = email_addr.lower()
-        logger.info("[imap] waiting for OTP -> %s", target)
+        # Date headers can precede actual delivery by several seconds due to
+        # forwarding. Keep the window narrow enough to avoid old codes while
+        # allowing a freshly delivered message whose Date is slightly stale.
+        threshold = (issued_after or time.time()) - 60
+        targets = {email_addr.lower()}
+        targets.update(
+            target.strip().lower()
+            for target in (additional_targets or ())
+            if target and target.strip()
+        )
+        logger.info("[imap] waiting for OTP -> %s", ", ".join(sorted(targets)))
 
         while time.time() < deadline:
             client = None
@@ -148,7 +157,7 @@ class ImapCatchAllProvider:
                     if not any(domain in sender for domain in _FROM_DOMAINS) or "tm1.openai" in sender:
                         continue
                     recipients = _recipient_addresses(message)
-                    if target not in recipients:
+                    if not targets.intersection(recipients):
                         continue
                     try:
                         received = email.utils.parsedate_to_datetime(message.get("Date", ""))
@@ -160,7 +169,7 @@ class ImapCatchAllProvider:
                         pass
                     otp = _extract_otp(_message_body(message))
                     if otp:
-                        logger.info("[imap] OTP received for %s", target)
+                        logger.info("[imap] OTP received for %s", ", ".join(sorted(targets)))
                         return otp
             except imaplib.IMAP4.error as exc:
                 raise RuntimeError(f"IMAP authentication or protocol error: {exc}") from exc

@@ -101,6 +101,7 @@ class ICloudImapProviderTests(unittest.TestCase):
                 "shared@example.com",
                 timeout=12,
                 issued_after=123,
+                additional_targets=("alias@icloud.com",),
             )
 
     def test_from_config_rejects_missing_shared_credentials(self):

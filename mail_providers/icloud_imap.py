@@ -154,6 +154,7 @@ class ICloudImapProvider(MailProvider):
             self.imap_email,
             timeout=timeout,
             issued_after=issued_after,
+            additional_targets=(self.email,),
         )
 
     @classmethod

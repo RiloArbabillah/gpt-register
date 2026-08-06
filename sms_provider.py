@@ -827,6 +827,21 @@ class SmsBowerProvider(BaseSmsProvider):
         self._resend_callback = callback
 
 
+class FiveSimPurchaseError(RuntimeError):
+    """A purchase response that 5sim did not return as a valid activation."""
+
+    def __init__(self, *, status_code, body: str, category: str):
+        self.status_code = status_code
+        self.body = body
+        self.category = category
+        status = status_code if status_code is not None else "unknown"
+        label = {
+            "operator_unavailable": "no free phones",
+            "provider_error": "provider error",
+        }.get(category, category)
+        super().__init__(f"{label} (HTTP {status}; body={json.dumps(body, ensure_ascii=False)})")
+
+
 class FiveSimProvider(BaseSmsProvider):
     """5sim activation provider with the same reusable-number lifecycle."""
 
@@ -1029,6 +1044,47 @@ class FiveSimProvider(BaseSmsProvider):
         raw = str(value or "").strip()
         return raw if raw.startswith("+") else f"+{raw}"
 
+    @staticmethod
+    def _purchase_body(response) -> str:
+        body = str(getattr(response, "text", "") or "")
+        body = " ".join(body.split())
+        return body[:200]
+
+    @classmethod
+    def _purchase_error(cls, response, *, category: Optional[str] = None) -> FiveSimPurchaseError:
+        body = cls._purchase_body(response)
+        if category is None:
+            category = "operator_unavailable" if body.lower() == "no free phones" else "provider_error"
+        return FiveSimPurchaseError(
+            status_code=getattr(response, "status_code", None),
+            body=body,
+            category=category,
+        )
+
+    @classmethod
+    def _parse_purchase_response(cls, response) -> dict:
+        try:
+            data = response.json()
+        except (TypeError, ValueError) as exc:
+            raise cls._purchase_error(response) from exc
+        if not isinstance(data, dict):
+            raise cls._purchase_error(response)
+        if not data.get("id") or not data.get("phone"):
+            raise cls._purchase_error(response)
+        return data
+
+    def _purchase(self, path: str) -> dict:
+        try:
+            response = self._request(path, params={"reuse": 1})
+        except requests.HTTPError as exc:
+            response = getattr(exc, "response", None)
+            if response is None:
+                raise FiveSimPurchaseError(
+                    status_code=None, body=str(exc)[:200], category="provider error"
+                ) from exc
+            raise self._purchase_error(response) from exc
+        return self._parse_purchase_response(response)
+
     def get_number(self, *, service: str, country: str = "",
                    country_candidates: Optional[list[str]] = None) -> SmsActivation:
         product = str(service or self.default_service or self.DEFAULT_PRODUCT).strip() or self.DEFAULT_PRODUCT
@@ -1087,10 +1143,9 @@ class FiveSimProvider(BaseSmsProvider):
                     for operator_row in operator_rows:
                         operator = operator_row["operator"]
                         try:
-                            data = self._request(
-                                f"user/buy/activation/{cid}/{operator}/{product}",
-                                params={"reuse": 1},
-                            ).json()
+                            data = self._purchase(
+                                f"user/buy/activation/{cid}/{operator}/{product}"
+                            )
                             aid = str(data.get("id") or "")
                             phone = self._phone(data.get("phone"))
                             price = data.get("price", operator_row["cost"])
@@ -1120,7 +1175,19 @@ class FiveSimProvider(BaseSmsProvider):
                                 self.max_price if self.max_price > 0 else "unlimited",
                             )
                             return activation
+                        except FiveSimPurchaseError as exc:
+                            logger.warning(
+                                "5sim purchase failed country=%s operator=%s status=%s "
+                                "category=%s body=%r",
+                                cid, operator, exc.status_code, exc.category, exc.body,
+                            )
+                            failures.append(f"{cid}/{operator}: {exc}")
                         except Exception as exc:
+                            logger.warning(
+                                "5sim purchase failed country=%s operator=%s status=%s "
+                                "category=provider_error body=%r",
+                                cid, operator, "unknown", str(exc)[:200],
+                            )
                             failures.append(f"{cid}/{operator}: {str(exc)[:120]}")
                 raise RuntimeError(f"5sim failed for all candidate countries: {' | '.join(failures)}")
 

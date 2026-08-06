@@ -151,7 +151,7 @@ class ICloudImapProvider(MailProvider):
 
     def wait_for_otp(self, email_addr: str, timeout: int = 120, issued_after=None) -> str:
         return self._imap.wait_for_otp(
-            email_addr,
+            self.imap_email,
             timeout=timeout,
             issued_after=issued_after,
         )

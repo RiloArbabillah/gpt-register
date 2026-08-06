@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 from unittest.mock import patch
 
+from mail_imap import _recipient_addresses
 from mail_providers import MailProviderError, get_provider_class, list_pooled_providers, parse_import_line
 from webui import db
 
@@ -95,6 +96,13 @@ class ICloudImapProviderTests(unittest.TestCase):
             )
             self.assertEqual(provider.create_mailbox(), "alias@icloud.com")
 
+            provider.wait_for_otp("alias@icloud.com", timeout=12, issued_after=123)
+            imap_cls.return_value.wait_for_otp.assert_called_once_with(
+                "shared@example.com",
+                timeout=12,
+                issued_after=123,
+            )
+
     def test_from_config_rejects_missing_shared_credentials(self):
         with self.assertRaises(MailProviderError):
             get_provider_class("icloud_imap").from_config(
@@ -142,6 +150,26 @@ class ICloudImapProviderTests(unittest.TestCase):
                     connection.close()
                 db.DB_PATH = previous_path
                 db._connections = previous_connections
+
+    def test_recipient_addresses_include_forwarding_headers(self):
+        from email import message_from_string
+
+        message = message_from_string(
+            "To: alias@icloud.com\n"
+            "Delivered-To: grok@deka.dev\n"
+            "X-Forwarded-To: shared@example.com\n"
+            "X-Forwarded-For: original@example.com shared@example.com\n"
+            "\n"
+        )
+        self.assertEqual(
+            _recipient_addresses(message),
+            {
+                "alias@icloud.com",
+                "grok@deka.dev",
+                "shared@example.com",
+                "original@example.com",
+            },
+        )
 
 
 if __name__ == "__main__":

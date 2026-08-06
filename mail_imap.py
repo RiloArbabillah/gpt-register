@@ -47,6 +47,38 @@ def _message_body(message: email.message.Message) -> str:
     return "\n".join(chunks)
 
 
+def _recipient_addresses(message: email.message.Message) -> set[str]:
+    """Return normalized recipients, including common forwarding headers."""
+    values = []
+    for header in (
+        "To",
+        "Delivered-To",
+        "X-Original-To",
+        "X-Forwarded-To",
+        "X-Forwarded-For",
+    ):
+        values.extend(message.get_all(header, []))
+    try:
+        parsed = email.utils.getaddresses(values, strict=False)
+    except TypeError:  # Python versions before the strict argument
+        parsed = email.utils.getaddresses(values)
+    addresses = {
+        address.lower()
+        for _, address in parsed
+        if address and "@" in address and not address.startswith("@")
+    }
+    # Python 3.14's strict parser can drop bare addresses in forwarding lists.
+    for value in values:
+        addresses.update(
+            match.group(0).lower()
+            for match in re.finditer(
+                r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+                value,
+            )
+        )
+    return addresses
+
+
 class ImapCatchAllProvider:
     """Generate unique catch-all addresses and retrieve their OTPs through IMAP."""
 
@@ -115,9 +147,7 @@ class ImapCatchAllProvider:
                     sender = message.get("From", "").lower()
                     if not any(domain in sender for domain in _FROM_DOMAINS) or "tm1.openai" in sender:
                         continue
-                    recipients = [address.lower() for _, address in email.utils.getaddresses(
-                        [message.get("To", ""), message.get("Delivered-To", ""), message.get("X-Original-To", "")]
-                    )]
+                    recipients = _recipient_addresses(message)
                     if target not in recipients:
                         continue
                     try:

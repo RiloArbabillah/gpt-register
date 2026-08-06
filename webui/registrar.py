@@ -593,6 +593,12 @@ def _do_recover_refresh_token(
                 mailbox_email=account["email"],
             )
             logging.getLogger("registrar").info("[recover-rt] using IMAP pool mailbox for OTP")
+        elif options.get("mail_source") == "icloud_imap":
+            mail = create_mail_provider("icloud_imap", db.get_mail_settings(), account)
+            logging.getLogger("registrar").info(
+                "[recover-rt] using iCloud IMAP mailbox for OTP: %s",
+                account.get("imap_email", "") if account else "",
+            )
         else:
             mail = OutlookMailProvider(
                 email=email,

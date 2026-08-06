@@ -688,7 +688,7 @@ def api_recover_refresh_token(req: RecoverRefreshTokenReq):
         raise HTTPException(400, "邮箱池中找不到该账号，无法重新登录获取 RT")
     # IMAP catch-all registrations may not persist a password. AuthFlow derives
     # the same default password from the email for an existing-account login.
-    if mail_source not in ("imap", "imap_pool") and not (registered.get("password") or (account or {}).get("password")):
+    if mail_source not in ("imap", "imap_pool", "icloud_imap") and not (registered.get("password") or (account or {}).get("password")):
         raise HTTPException(400, "该账号没有保存密码，无法重新登录获取 RT")
     if mail_source == "imap":
         imap = db.get_imap_credentials()
@@ -716,7 +716,7 @@ def api_recover_refresh_token_batch(req: RecoverRefreshTokenBatchReq):
         account = db.get_imap_account(email) if mail_source == "imap_pool" else db.get_account(email)
         if mail_source not in ("imap", "imap_pool") and not account:
             continue
-        if mail_source not in ("imap", "imap_pool") and not (registered.get("password") or (account or {}).get("password")):
+        if mail_source not in ("imap", "imap_pool", "icloud_imap") and not (registered.get("password") or (account or {}).get("password")):
             continue
         if mail_source == "imap":
             imap = db.get_imap_credentials()

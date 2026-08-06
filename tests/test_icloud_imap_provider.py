@@ -175,6 +175,12 @@ class ICloudImapProviderTests(unittest.TestCase):
     def test_openai_sender_accepts_icloud_masked_address(self):
         self.assertTrue(
             _is_openai_sender(
+                "ChatGPT <noreply_at_tm_openai_com_gpa69wd0d7ca4c_a47z8489@icloud.com>",
+                allow_masked=True,
+            )
+        )
+        self.assertFalse(
+            _is_openai_sender(
                 "ChatGPT <noreply_at_tm_openai_com_gpa69wd0d7ca4c_a47z8489@icloud.com>"
             )
         )

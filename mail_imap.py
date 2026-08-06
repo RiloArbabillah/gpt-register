@@ -17,11 +17,15 @@ logger = logging.getLogger(__name__)
 _FROM_DOMAINS = ("openai.com", "auth.openai", "tm.openai", "chatgpt.com", "tm.open")
 
 
-def _is_openai_sender(value: str) -> bool:
+def _is_openai_sender(value: str, allow_masked: bool = False) -> bool:
     """Recognize OpenAI senders after iCloud masks @ and dots with underscores."""
     raw = (value or "").lower()
+    if any(domain in raw for domain in _FROM_DOMAINS):
+        return True
+    if not allow_masked:
+        return False
     normalized = raw.replace("_at_", "@").replace("_", ".")
-    return any(domain in raw or domain in normalized for domain in _FROM_DOMAINS)
+    return any(domain in normalized for domain in _FROM_DOMAINS)
 
 
 def _extract_otp(body: str) -> Optional[str]:
@@ -135,7 +139,8 @@ class ImapCatchAllProvider:
         # Date headers can precede actual delivery by several seconds due to
         # forwarding. Keep the window narrow enough to avoid old codes while
         # allowing a freshly delivered message whose Date is slightly stale.
-        threshold = (issued_after or time.time()) - 60
+        timestamp_grace = 60 if additional_targets else 10
+        threshold = (issued_after or time.time()) - timestamp_grace
         targets = {email_addr.lower()}
         targets.update(
             target.strip().lower()
@@ -162,7 +167,8 @@ class ImapCatchAllProvider:
                     message = email.message_from_bytes(raw[0][1])
                     sender = message.get("From", "")
                     normalized_sender = sender.lower().replace("_at_", "@").replace("_", ".")
-                    if not _is_openai_sender(sender) or "tm1.openai" in normalized_sender:
+                    if not _is_openai_sender(sender, allow_masked=bool(additional_targets)) \
+                            or "tm1.openai" in normalized_sender:
                         continue
                     recipients = _recipient_addresses(message)
                     if not targets.intersection(recipients):

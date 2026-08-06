@@ -849,13 +849,39 @@ class FiveSimProvider(BaseSmsProvider):
     DEFAULT_PRODUCT = "openai"
     DEFAULT_COUNTRY = "thailand"
     HARD_LIFETIME = 20 * 60
+    # Fallback only: the live list comes from guest/countries. Keep these slugs
+    # aligned with that endpoint so a temporary API failure does not reintroduce
+    # legacy values such as ``uk``.
     COUNTRY_CODES = (
-        "thailand", "indonesia", "vietnam", "malaysia", "philippines", "india",
-        "usa", "canada", "mexico", "brazil", "argentina", "uk", "germany",
-        "france", "italy", "spain", "poland", "netherlands", "turkey", "ukraine",
-        "russia", "kazakhstan", "japan", "korea", "hongkong", "taiwan", "australia",
-        "newzealand", "southafrica", "israel", "romania", "czech", "sweden", "norway",
+        "afghanistan", "albania", "algeria", "angola", "antiguaandbarbuda", "argentina",
+        "armenia", "aruba", "australia", "austria", "azerbaijan", "bahamas", "bahrain",
+        "bangladesh", "barbados", "belgium", "belize", "benin", "bhutane", "bih",
+        "bolivia", "botswana", "brazil", "bulgaria", "burkinafaso", "burundi", "cambodia",
+        "cameroon", "canada", "capeverde", "chad", "chile", "colombia", "comoros", "congo",
+        "costarica", "croatia", "cyprus", "czech", "denmark", "djibouti", "dominicana",
+        "easttimor", "ecuador", "egypt", "england", "equatorialguinea", "estonia", "ethiopia",
+        "finland", "france", "frenchguiana", "gabon", "gambia", "georgia", "germany", "ghana",
+        "greece", "guadeloupe", "guatemala", "guinea", "guineabissau", "guyana", "haiti",
+        "honduras", "hongkong", "hungary", "india", "indonesia", "ireland", "israel", "italy",
+        "ivorycoast", "jamaica", "jordan", "kazakhstan", "kenya", "kuwait", "kyrgyzstan", "laos",
+        "latvia", "lesotho", "liberia", "lithuania", "luxembourg", "macau", "madagascar", "malawi",
+        "malaysia", "maldives", "mauritania", "mauritius", "mexico", "moldova", "mongolia",
+        "montenegro", "morocco", "mozambique", "namibia", "nepal", "netherlands", "newcaledonia",
+        "nicaragua", "nigeria", "northmacedonia", "norway", "oman", "pakistan", "panama",
+        "papuanewguinea", "paraguay", "peru", "philippines", "poland", "portugal", "puertorico",
+        "reunion", "romania", "rwanda", "saintkittsandnevis", "saintlucia", "saintvincentandgrenadines",
+        "salvador", "samoa", "saudiarabia", "senegal", "serbia", "seychelles", "sierraleone",
+        "slovakia", "slovenia", "solomonislands", "southafrica", "spain", "srilanka", "suriname",
+        "swaziland", "sweden", "taiwan", "tajikistan", "tanzania", "thailand", "tit", "togo",
+        "tunisia", "turkmenistan", "uganda", "uruguay", "usa", "uzbekistan", "venezuela", "vietnam",
+        "zambia",
     )
+    COUNTRY_ALIASES = {
+        "uk": "england",
+        "bosnia": "bih",
+        "dominicanrepublic": "dominicana",
+        "trinidad": "tit",
+    }
     auto_report_success_on_code = False
 
     def __init__(self, api_key: str, *, base_url: str = "", default_service: str = DEFAULT_PRODUCT,
@@ -866,7 +892,7 @@ class FiveSimProvider(BaseSmsProvider):
         self.api_key = str(api_key or "").strip()
         self.base_url = (str(base_url or "").strip() or self.DEFAULT_BASE_URL).rstrip("/")
         self.default_service = str(default_service or self.DEFAULT_PRODUCT).strip() or self.DEFAULT_PRODUCT
-        self.default_country = str(default_country or self.DEFAULT_COUNTRY).strip() or self.DEFAULT_COUNTRY
+        self.default_country = self.normalize_country(default_country) or self.DEFAULT_COUNTRY
         self.max_price = float(max_price or -1)
         self._proxy = (proxy or "").strip() or None
         self._proxies = {"http": self._proxy, "https": self._proxy} if self._proxy else None
@@ -1037,7 +1063,33 @@ class FiveSimProvider(BaseSmsProvider):
         return str(rows[0].get("country")) if rows else self.default_country
 
     def get_country_options(self) -> list[dict]:
-        return [{"country": code, "price": None, "count": None} for code in self.COUNTRY_CODES]
+        try:
+            data = self._request("guest/countries").json()
+            if not isinstance(data, dict):
+                raise RuntimeError("5sim countries response was not an object")
+            rows = []
+            for country, details in data.items():
+                if not isinstance(details, dict):
+                    continue
+                rows.append({
+                    "country": str(country),
+                    "name_en": str(details.get("text_en") or country),
+                    "name_cn": str(details.get("text_ru") or country),
+                    "price": None,
+                    "count": None,
+                })
+            if rows:
+                return sorted(rows, key=lambda row: row["name_en"].lower())
+            raise RuntimeError("5sim countries response was empty")
+        except Exception as exc:
+            logger.warning("5sim country list lookup failed; using fallback slugs: %s", exc)
+            return [{"country": code, "name_en": code, "name_cn": code,
+                     "price": None, "count": None} for code in self.COUNTRY_CODES]
+
+    @classmethod
+    def normalize_country(cls, country: str) -> str:
+        value = str(country or "").strip().lower()
+        return cls.COUNTRY_ALIASES.get(value, value)
 
     @staticmethod
     def _phone(value) -> str:
@@ -1088,7 +1140,7 @@ class FiveSimProvider(BaseSmsProvider):
     def get_number(self, *, service: str, country: str = "",
                    country_candidates: Optional[list[str]] = None) -> SmsActivation:
         product = str(service or self.default_service or self.DEFAULT_PRODUCT).strip() or self.DEFAULT_PRODUCT
-        candidates = [str(c).strip() for c in (country_candidates or [country or self.default_country]) if str(c).strip()]
+        candidates = [self.normalize_country(c) for c in (country_candidates or [country or self.default_country]) if str(c).strip()]
         if not candidates:
             candidates = [self.default_country]
         with _SMS_VERIFY_LOCK:

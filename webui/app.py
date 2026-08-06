@@ -913,9 +913,12 @@ def api_sms_all_countries(provider: str = ""):
                 countries = []
                 for r in p.get_country_options():
                     cid = str(r.get("country") or "")
-                    countries.append({"id": cid, "name_cn": cid, "openai_sms_safe": False,
+                    countries.append({"id": cid, "name_cn": r.get("name_cn") or cid,
+                                      "name_en": r.get("name_en") or cid,
+                                      "openai_sms_safe": cid in OPENAI_SMS_COUNTRIES,
                                       "price": r.get("price"), "count": r.get("count")})
-                return {"ok": True, "countries": countries, "openai_sms_safe": [], "source": "5sim"}
+                return {"ok": True, "countries": countries,
+                        "openai_sms_safe": list(OPENAI_SMS_COUNTRIES), "source": "5sim"}
             service = "openai" if cfg["sms_provider"] == "5sim" else (cfg.get("sms_service") or "dr")
             rows = p.get_top_countries(service=service)
             countries = []

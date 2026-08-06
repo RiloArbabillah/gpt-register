@@ -154,6 +154,44 @@ def test_new_activation_metadata_is_persisted(monkeypatch, tmp_path):
     assert {key: cache[key] for key in expected} == expected
 
 
+def test_country_options_use_official_5sim_slugs(monkeypatch, tmp_path):
+    p = provider(tmp_path, monkeypatch)
+    calls = []
+    p._request = lambda path, **kwargs: calls.append(path) or FakeResponse({
+        "england": {"text_en": "England", "text_ru": "Великобритания", "virtual34": {"activation": 1}},
+        "bih": {"text_en": "Bosnia and Herzegovina", "text_ru": "Босния и Герцеговина"},
+        "thailand": {"text_en": "Thailand", "text_ru": "Таиланд"},
+    })
+
+    options = p.get_country_options()
+
+    assert calls == ["guest/countries"]
+    assert {row["country"] for row in options} == {"england", "bih", "thailand"}
+    assert {row["country"] for row in options} != {"uk", "bosnia"}
+    england = next(row for row in options if row["country"] == "england")
+    assert england["name_en"] == "England"
+
+
+def test_legacy_country_aliases_are_normalized_before_requests(monkeypatch, tmp_path):
+    p = provider(tmp_path, monkeypatch)
+    calls = []
+
+    def request(path, **kwargs):
+        calls.append((path, kwargs))
+        return (
+            FakeResponse(nested_prices(alpha={"cost": 0.01, "count": 1, "rate": 1}))
+            if path == "guest/prices"
+            else FakeResponse({"id": "42", "phone": "4412345678"})
+        )
+
+    p._request = request
+
+    activation = p.get_number(service="openai", country="uk")
+
+    assert activation.country == "england"
+    assert calls[0][1]["params"]["country"] == "england"
+
+
 def test_purchase_200_no_free_phones_falls_back_without_retry(monkeypatch, tmp_path):
     p = provider(tmp_path, monkeypatch)
     calls = []

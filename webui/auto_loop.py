@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import queue
 import threading
 import time
@@ -21,6 +22,36 @@ from . import db, registrar
 from mail_providers import MailProviderError, get_provider_class
 
 logger = logging.getLogger("auto_loop")
+
+DEFAULT_COOLDOWN_SECONDS = 3
+MAX_COOLDOWN_SECONDS = 10 * 60
+COOLDOWN_LOG_INTERVAL_SECONDS = 30
+
+
+def _normalize_cooldown(value) -> float:
+    """Return a usable cooldown while keeping the UI/API contract bounded."""
+    if value is None:
+        return DEFAULT_COOLDOWN_SECONDS
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_COOLDOWN_SECONDS
+    if not math.isfinite(seconds):
+        return DEFAULT_COOLDOWN_SECONDS
+    return max(0.0, min(float(MAX_COOLDOWN_SECONDS), seconds))
+
+
+def _cooldown_checkpoints(seconds: float) -> list[int]:
+    """Return countdown values to publish, starting immediately."""
+    total = int(math.ceil(_normalize_cooldown(seconds)))
+    if total <= 0:
+        return []
+    checkpoints = [total]
+    remaining = total
+    while remaining > COOLDOWN_LOG_INTERVAL_SECONDS:
+        remaining -= COOLDOWN_LOG_INTERVAL_SECONDS
+        checkpoints.append(remaining)
+    return checkpoints
 
 
 class AutoLoopState:
@@ -46,7 +77,7 @@ class AutoLoopController:
       proxy:                单代理（兼容旧版，concurrency=1 时用）
       proxy_pool:           多代理字符串（每行一个；多 worker 会按 worker index 轮流取）
       concurrency:          并发 worker 数（1-20）
-      cool_down_seconds:    每个 worker 跑完后冷却时间（默认 3）
+      cool_down_seconds:    每个 worker 跑完后冷却时间（默认 3，最大 600）
       其余参数透传给 registrar.start_registration
     """
 
@@ -455,12 +486,39 @@ class AutoLoopController:
             })
 
             # 冷却（每个 worker 自己的节奏）
-            cool_down = float(self._options.get("cool_down_seconds") or 3)
-            if cool_down > 0:
-                for _ in range(int(cool_down * 10)):
-                    if self._stop_event.is_set() or self._pause_event.is_set():
-                        break
-                    time.sleep(0.1)
+            self._wait_cooldown(
+                worker_id,
+                _normalize_cooldown(self._options.get("cool_down_seconds")),
+            )
+
+    def _interruptible_wait(self, seconds: float) -> bool:
+        """Wait in short intervals; return True when stop/pause interrupts it."""
+        deadline = time.monotonic() + max(0.0, seconds)
+        while True:
+            if self._stop_event.is_set() or self._pause_event.is_set():
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.1, remaining))
+
+    def _wait_cooldown(self, worker_id: int, seconds: float):
+        """Wait between runs and publish a 30-second countdown over SSE."""
+        total = _normalize_cooldown(seconds)
+        checkpoints = _cooldown_checkpoints(total)
+        remaining = total
+        for value in checkpoints:
+            if self._stop_event.is_set() or self._pause_event.is_set():
+                return
+            self._broadcast("cooldown", {
+                "worker_id": worker_id,
+                "remaining": value,
+                "total": int(math.ceil(total)),
+            })
+            wait_seconds = min(float(COOLDOWN_LOG_INTERVAL_SECONDS), remaining)
+            if self._interruptible_wait(wait_seconds):
+                return
+            remaining -= wait_seconds
 
     def _wait_run_finish(self, run_id: str, timeout: int = 1800) -> tuple[bool, str]:
         """轮询 runs 表，等 run 跑完。"""

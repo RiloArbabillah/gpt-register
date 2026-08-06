@@ -102,6 +102,12 @@ export const useRuntimeStore = defineStore('runtime', () => {
           bumpData()
         } catch (_) {}
       },
+      cooldown: (e) => {
+        try {
+          const d = JSON.parse(e.data)
+          addLog(`[auto] worker-${d.worker_id} cooldown (${d.remaining}s)`, 'evt')
+        } catch (_) {}
+      },
       circuit_break: (e) => {
         try {
           const d = JSON.parse(e.data)

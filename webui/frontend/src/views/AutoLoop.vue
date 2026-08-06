@@ -67,7 +67,7 @@ async function call(fn, name) {
           <el-input-number v-model="form.autoConcurrency" :min="1" :max="20" />
         </el-form-item>
         <el-form-item :label="locale.t('cooldown')" style="margin: 0">
-          <el-input-number v-model="form.autoCoolDown" :min="0" :max="120" />
+          <el-input-number v-model="form.autoCoolDown" :min="0" :max="600" />
         </el-form-item>
         <el-form-item :label="locale.t('target')" style="margin: 0">
           <el-input-number v-model="form.autoTargetCount" :min="0" :max="100000" />

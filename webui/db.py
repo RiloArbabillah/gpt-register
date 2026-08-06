@@ -11,7 +11,7 @@
 
 凭证字段用「并集列」而不是 extra_json：
     outlook/gmail 用 password+client_id+refresh_token，
-    icloud 这类中转只用 relay_url，各自把不用的列留空。
+    icloud relay 只用 relay_url，icloud IMAP 只用 imap_email，各自把不用的列留空。
     几种邮箱的规模下，并集列比 JSON 好 —— 能建索引、能加约束、
     SQL 里直接看得见。加新邮箱时如果要新字段，就再 ALTER 加一列。
 """
@@ -66,6 +66,7 @@ def init_db():
             client_id       TEXT,
             refresh_token   TEXT,
             relay_url       TEXT,       -- 中转取码 URL（icloud 类用，其余留空）
+            imap_email      TEXT,       -- IMAP mailbox email（icloud_imap 类用，其余留空）
             kind            TEXT NOT NULL DEFAULT 'outlook',
                             -- 邮箱类型，对应 mail_providers 注册表的 kind
             status          TEXT NOT NULL DEFAULT 'available',
@@ -174,7 +175,7 @@ def init_db():
             )
             con.commit()
 
-    # 老 DB migrate：号池多邮箱混放（kind / relay_url 在后期才加）
+    # 老 DB migrate：号池多邮箱混放（kind / relay_url / imap_email 在后期才加）
     # 存量行全部是 outlook 时代导进去的，DEFAULT 'outlook' 正好把它们
     # 归位，不需要额外 UPDATE。重复执行无副作用。
     cur = con.execute("PRAGMA table_info(outlook_accounts)")
@@ -186,6 +187,9 @@ def init_db():
         con.commit()
     if "relay_url" not in acc_cols:
         con.execute("ALTER TABLE outlook_accounts ADD COLUMN relay_url TEXT")
+        con.commit()
+    if "imap_email" not in acc_cols:
+        con.execute("ALTER TABLE outlook_accounts ADD COLUMN imap_email TEXT")
         con.commit()
     # 索引建在补列之后，否则老库上 CREATE INDEX 会因为没有 kind 列而失败
     con.execute(
@@ -363,31 +367,33 @@ def import_accounts(text: str, kind: str = "") -> dict:
             client_id = r.get("client_id", "") or ""
             refresh = r.get("refresh_token", "") or ""
             relay = r.get("relay_url", "") or ""
+            imap_email = r.get("imap_email", "") or ""
 
             cur = con.execute(
-                "SELECT refresh_token, relay_url, kind FROM outlook_accounts WHERE email=?",
+                "SELECT refresh_token, relay_url, imap_email, kind FROM outlook_accounts WHERE email=?",
                 (r["email"],),
             )
             existing = cur.fetchone()
             if existing is None:
                 con.execute(
                     "INSERT INTO outlook_accounts(email, password, client_id, refresh_token, "
-                    "relay_url, kind, status, imported_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, 'available', ?)",
-                    (r["email"], password, client_id, refresh, relay, row_kind, now),
+                    "relay_url, imap_email, kind, status, imported_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'available', ?)",
+                    (r["email"], password, client_id, refresh, relay, imap_email, row_kind, now),
                 )
                 inserted += 1
             elif (
                 (existing["refresh_token"] or "") != refresh
                 or (existing["relay_url"] or "") != relay
+                or (existing["imap_email"] or "") != imap_email
                 or (existing["kind"] or "") != row_kind
             ):
                 # 凭证或类型变了 → 覆盖并重置为可用
                 con.execute(
                     "UPDATE outlook_accounts SET refresh_token=?, password=?, client_id=?, "
-                    "relay_url=?, kind=?, status='available', imported_at=?, fail_reason=NULL "
+                    "relay_url=?, imap_email=?, kind=?, status='available', imported_at=?, fail_reason=NULL "
                     "WHERE email=?",
-                    (refresh, password, client_id, relay, row_kind, now, r["email"]),
+                    (refresh, password, client_id, relay, imap_email, row_kind, now, r["email"]),
                 )
                 updated += 1
             else:

@@ -590,6 +590,26 @@ def api_registered_emails(email: str, limit: int = 10):
             if not account:
                 raise HTTPException(400, "The IMAP Pool mailbox was not found")
             messages = fetch_imap_messages(account["host"], account["email"], account["password"], email, int(account.get("port") or 993), limit)
+        elif source == "icloud_imap":
+            account = db.get_account(email)
+            if not account or account.get("kind") != "icloud_imap":
+                raise HTTPException(400, "The iCloud IMAP mailbox was not found")
+            config = db.get_mail_settings()
+            required = (
+                "icloud_imap_host",
+                "icloud_imap_username",
+                "icloud_imap_password",
+            )
+            if not all(config.get(key) for key in required):
+                raise HTTPException(400, "iCloud IMAP configuration is incomplete")
+            messages = fetch_imap_messages(
+                config["icloud_imap_host"],
+                config["icloud_imap_username"],
+                config["icloud_imap_password"],
+                account.get("imap_email", ""),
+                int(config.get("icloud_imap_port") or 993),
+                limit,
+            )
         elif source == "cf_temp":
             cfg = db.get_mail_config()
             if not cfg.get("cf_api_url") or not cfg.get("cf_domain") or not db.get_cf_admin_token():

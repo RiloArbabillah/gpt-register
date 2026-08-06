@@ -946,6 +946,77 @@ class FiveSimProvider(BaseSmsProvider):
                              "count": item.get("Qty", item.get("qty", item.get("count", 0)))})
         return rows
 
+    @staticmethod
+    def _normalise_operator_prices(data) -> list[dict]:
+        """Flatten the nested guest/prices response into ranked-row inputs."""
+        rows: list[dict] = []
+        seen: set[tuple] = set()
+        field_names = {"operator", "cost", "count", "rate"}
+
+        def number(value, *, integer: bool = False, default=None):
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return default
+            if integer:
+                return int(parsed)
+            return int(parsed) if parsed.is_integer() else parsed
+
+        def add(operator, item):
+            if not isinstance(item, dict):
+                return
+            lowered = {str(key).lower(): value for key, value in item.items()}
+            operator = lowered.get("operator", operator)
+            operator = str(operator or "").strip()
+            cost = number(lowered.get("cost"))
+            if not operator or cost is None:
+                return
+            row = {
+                "operator": operator,
+                "cost": cost,
+                "count": number(lowered.get("count"), integer=True, default=0),
+                "rate": number(lowered.get("rate"), default=0),
+            }
+            key = (row["operator"], row["cost"], row["count"], row["rate"])
+            if key not in seen:
+                seen.add(key)
+                rows.append(row)
+
+        def walk(node):
+            if isinstance(node, list):
+                for item in node:
+                    walk(item)
+                return
+            if not isinstance(node, dict):
+                return
+            lowered_keys = {str(key).lower() for key in node}
+            if lowered_keys & field_names:
+                add(node.get("operator"), node)
+            for key, value in node.items():
+                if isinstance(value, dict):
+                    value_keys = {str(name).lower() for name in value}
+                    if value_keys & {"cost", "count", "rate"}:
+                        add(key, value)
+                    walk(value)
+                elif isinstance(value, list):
+                    walk(value)
+
+        walk(data)
+        return rows
+
+    def _operator_candidates(self, country: str, product: str) -> list[dict]:
+        data = self._request(
+            "guest/prices",
+            params={"country": str(country), "product": str(product)},
+        ).json()
+        rows = self._normalise_operator_prices(data)
+        rows = [
+            row for row in rows
+            if row["count"] > 0 and (self.max_price <= 0 or row["cost"] <= self.max_price)
+        ]
+        rows.sort(key=lambda row: (-row["rate"], row["cost"], -row["count"], row["operator"]))
+        return rows
+
     def get_best_country(self, service: Optional[str] = None, **kwargs) -> Optional[str]:
         rows = self.get_top_countries(service=service)
         return str(rows[0].get("country")) if rows else self.default_country
@@ -988,46 +1059,69 @@ class FiveSimProvider(BaseSmsProvider):
                         # cached order; the hard local expiry remains authoritative.
                         pass
                 if cache and str(cache.get("country")) in candidates:
+                    metadata = {
+                        "reused": True,
+                        "use_count": int(cache.get("use_count") or 0),
+                        "expires_at": cache.get("expires_at"),
+                        "price": cache.get("price"),
+                    }
+                    for key in ("operator", "cost", "rate", "count"):
+                        if key in cache:
+                            metadata[key] = cache[key]
                     activation = SmsActivation(str(cache["activation_id"]), str(cache["phone_number"]),
                                                 str(cache.get("country") or candidates[0]),
-                                                {"reused": True, "use_count": int(cache.get("use_count") or 0),
-                                                 "expires_at": cache.get("expires_at"),
-                                                 "price": cache.get("price")})
+                                                metadata)
                     self.current_activation = activation
                     return activation
                 failures = []
                 for cid in candidates:
-                    params = {"reuse": 1}
-                    if self.max_price > 0:
-                        params["maxPrice"] = self.max_price
                     try:
-                        data = self._request(f"user/buy/activation/{cid}/any/{product}", params=params).json()
-                        aid = str(data.get("id") or "")
-                        phone = self._phone(data.get("phone"))
-                        price = data.get("price")
-                        if not aid or phone == "+":
-                            raise RuntimeError("5sim returned an incomplete activation")
-                        acquired = time.time()
-                        expires_at = acquired + self.HARD_LIFETIME
-                        cache = {**self._cache_identity(product, cid), "activation_id": aid,
-                                 "phone_number": phone, "acquired_at": acquired,
-                                 "expires_at": expires_at, "api_expires": data.get("expires"),
-                                 "price": price,
-                                 "use_count": 0, "used_codes": set(), "reuse_stopped": False,
-                                 "stop_reason": "", "cooldown_until": 0}
-                        self._save_cache(cache)
-                        activation = SmsActivation(aid, phone, cid,
-                                                   {"reused": False, "expires_at": expires_at,
-                                                    "api_expires": data.get("expires"), "price": price})
-                        self.current_activation = activation
-                        logger.info(
-                            "5sim rented number phone=%s country=%s product=%s price=%s order_id=%s max_price=%s",
-                            phone, cid, product, price if price is not None else "unknown", aid,
-                            self.max_price if self.max_price > 0 else "unlimited",
-                        )
-                        return activation
+                        operator_rows = self._operator_candidates(cid, product)
                     except Exception as exc:
-                        failures.append(f"{cid}: {str(exc)[:120]}")
+                        raise RuntimeError(
+                            f"5sim price discovery failed for country {cid}: {str(exc)[:120]}"
+                        ) from exc
+                    if not operator_rows:
+                        failures.append(f"{cid}: price discovery returned no in-stock operator within max_price")
+                        continue
+                    for operator_row in operator_rows:
+                        operator = operator_row["operator"]
+                        try:
+                            data = self._request(
+                                f"user/buy/activation/{cid}/{operator}/{product}",
+                                params={"reuse": 1},
+                            ).json()
+                            aid = str(data.get("id") or "")
+                            phone = self._phone(data.get("phone"))
+                            price = data.get("price", operator_row["cost"])
+                            if not aid or phone == "+":
+                                raise RuntimeError("5sim returned an incomplete activation")
+                            acquired = time.time()
+                            expires_at = acquired + self.HARD_LIFETIME
+                            metadata = {
+                                "reused": False, "expires_at": expires_at,
+                                "api_expires": data.get("expires"), "price": price,
+                                **operator_row,
+                            }
+                            cache = {**self._cache_identity(product, cid), "activation_id": aid,
+                                     "phone_number": phone, "acquired_at": acquired,
+                                     "expires_at": expires_at, "api_expires": data.get("expires"),
+                                     "price": price, **operator_row,
+                                     "use_count": 0, "used_codes": set(), "reuse_stopped": False,
+                                     "stop_reason": "", "cooldown_until": 0}
+                            self._save_cache(cache)
+                            activation = SmsActivation(aid, phone, cid, metadata)
+                            self.current_activation = activation
+                            logger.info(
+                                "5sim rented number phone=%s country=%s product=%s operator=%s "
+                                "cost=%s rate=%s count=%s order_id=%s max_price=%s",
+                                phone, cid, product, operator, operator_row["cost"],
+                                operator_row["rate"], operator_row["count"], aid,
+                                self.max_price if self.max_price > 0 else "unlimited",
+                            )
+                            return activation
+                        except Exception as exc:
+                            failures.append(f"{cid}/{operator}: {str(exc)[:120]}")
                 raise RuntimeError(f"5sim failed for all candidate countries: {' | '.join(failures)}")
 
     def get_status(self, activation_id: str) -> dict:

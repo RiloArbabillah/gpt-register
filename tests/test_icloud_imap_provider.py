@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 from unittest.mock import patch
 
-from mail_imap import _recipient_addresses
+from mail_imap import _is_openai_sender, _recipient_addresses
 from mail_providers import MailProviderError, get_provider_class, list_pooled_providers, parse_import_line
 from webui import db
 
@@ -170,6 +170,18 @@ class ICloudImapProviderTests(unittest.TestCase):
                 "shared@example.com",
                 "original@example.com",
             },
+        )
+
+    def test_openai_sender_accepts_icloud_masked_address(self):
+        self.assertTrue(
+            _is_openai_sender(
+                "ChatGPT <noreply_at_tm_openai_com_gpa69wd0d7ca4c_a47z8489@icloud.com>"
+            )
+        )
+        self.assertTrue(
+            _is_openai_sender(
+                '"noreply@tm.openai.com" <noreply_at_tm_openai_com_gpa69wd0d7ca4c_a47z8489@icloud.com>'
+            )
         )
 
 

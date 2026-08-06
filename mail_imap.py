@@ -17,6 +17,13 @@ logger = logging.getLogger(__name__)
 _FROM_DOMAINS = ("openai.com", "auth.openai", "tm.openai", "chatgpt.com", "tm.open")
 
 
+def _is_openai_sender(value: str) -> bool:
+    """Recognize OpenAI senders after iCloud masks @ and dots with underscores."""
+    raw = (value or "").lower()
+    normalized = raw.replace("_at_", "@").replace("_", ".")
+    return any(domain in raw or domain in normalized for domain in _FROM_DOMAINS)
+
+
 def _extract_otp(body: str) -> Optional[str]:
     for pattern in (
         r"(?:code(?:\s*is)?|verification|one[-\s]*time|verify|kode|verifikasi)[^\d<>]{0,80}(\d{6})\b",
@@ -153,8 +160,9 @@ class ImapCatchAllProvider:
                     if status != "OK" or not raw or not raw[0]:
                         continue
                     message = email.message_from_bytes(raw[0][1])
-                    sender = message.get("From", "").lower()
-                    if not any(domain in sender for domain in _FROM_DOMAINS) or "tm1.openai" in sender:
+                    sender = message.get("From", "")
+                    normalized_sender = sender.lower().replace("_at_", "@").replace("_", ".")
+                    if not _is_openai_sender(sender) or "tm1.openai" in normalized_sender:
                         continue
                     recipients = _recipient_addresses(message)
                     if not targets.intersection(recipients):
